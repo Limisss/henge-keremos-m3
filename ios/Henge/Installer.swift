@@ -46,6 +46,7 @@ final class Installer: NSObject, ObservableObject {
         let failedRAMMB: Int
         let cpus: Int
         let keepImage: Bool
+        let isMemoryFailure: Bool
     }
 
     @Published private(set) var phase: Phase = .idle
@@ -72,7 +73,7 @@ final class Installer: NSObject, ObservableObject {
     /// so we can safely retry at 3 GB (`3072 MB`) in the current session without restarting Henge.
     var canRetryInProcessWith3GB: Bool {
         guard let ctx = retryContext else { return false }
-        return ctx.failedRAMMB > 3072 && henge_vm_state() == 0
+        return ctx.isMemoryFailure && ctx.failedRAMMB > 3072 && henge_vm_state() == 0
     }
 
     /// True when a VM already ran and stopped during the failed install (`henge_vm_state() != 0`),
@@ -162,11 +163,13 @@ final class Installer: NSObject, ObservableObject {
                 HengeLog.log("install", "\(name): installed \(release.name)")
                 phase = .done("\(release.name), '\(name)' üzerine başarıyla kuruldu. İlk açılış için Henge'i tamamen kapatıp (yukarı kaydırarak) yeniden açın ve Başlat'a dokunun.")
             } catch {
-                HengeLog.log("install", "failed: \(error.localizedDescription)")
+                let errText = error.localizedDescription
+                HengeLog.log("install", "failed: \(errText)")
                 // A half-installed Mac is no use, and its disk can be many gigabytes. The download ALWAYS stays on failure so the user never has to re-download 16+ GB!
                 if let made, henge_vm_state() != 1 { try? FileManager.default.removeItem(at: made.directory) }
-                retryContext = RetryContext(release: release, name: name, failedRAMMB: ramMB, cpus: cpus, keepImage: keepImage)
-                phase = .failed(error.localizedDescription)
+                let isMem = Self.haveImage(release) && (errText.localizedCaseInsensitiveContains("RAM") || errText.localizedCaseInsensitiveContains("bellek"))
+                retryContext = RetryContext(release: release, name: name, failedRAMMB: ramMB, cpus: cpus, keepImage: keepImage, isMemoryFailure: isMem)
+                phase = .failed(errText)
             }
         }
     }

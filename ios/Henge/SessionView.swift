@@ -23,6 +23,8 @@ struct SessionView: View {
     @State private var log: [String] = []
     @State private var started = Date()
     @AppStorage("henge.cpus") private var cpus = 4
+    @AppStorage("henge.pointerSpeed") private var pointerSpeed = 1.0
+    @AppStorage("henge.naturalScrolling") private var naturalScrolling = true
 
     @State private var typing = false
     @State private var zoomed = false
@@ -362,7 +364,8 @@ struct SessionView: View {
     // MARK: Status
 
     private func errorCard(_ text: String, _ layout: Layout) -> some View {
-        let canFallbackTo3GB = henge_vm_state() == 0 && (activeRAMMB > 3072 || mac.ramMB > 3072)
+        let isMemoryFailure = text.localizedCaseInsensitiveContains("RAM") || text.localizedCaseInsensitiveContains("bellek")
+        let canFallbackTo3GB = isMemoryFailure && henge_vm_state() == 0 && (activeRAMMB > 3072 || mac.ramMB > 3072)
         return VStack(alignment: .leading, spacing: 10) {
             Text("Sanal Mac Başlatılamadı").font(.system(size: 17, weight: .semibold))
             Text(text).font(.system(size: 14)).foregroundStyle(Desk.dim)
@@ -418,6 +421,17 @@ struct SessionView: View {
                     LabeledContent("Kalan Güvenli Pay (jetsam öncesi)", value: "\(Device.currentAvailableMemoryMB) MB")
                 }
                 Section("Klavye ve İzleme Dörtgeni (Magic Keyboard)") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("İmleç Hızı")
+                            Spacer()
+                            Text(String(format: "%.1f×", pointerSpeed)).foregroundStyle(.secondary)
+                        }
+                        Slider(value: $pointerSpeed, in: 0.4...2.5, step: 0.1)
+                            .onChange(of: pointerSpeed) { _ in HardwareMouse.shared.reloadSettings() }
+                    }
+                    Toggle("Doğal Kaydırma (Natural Scrolling)", isOn: $naturalScrolling)
+                        .onChange(of: naturalScrolling) { _ in HardwareMouse.shared.reloadSettings() }
                     Button("Takılı Tuşları ve İmleç Kilidini Sıfırla") {
                         HardwareKeys.releaseAll()
                         HardwareMouse.shared.releaseButtons()
@@ -426,7 +440,7 @@ struct SessionView: View {
                         PointerLock.set(true)
                         showDetails = false
                     }
-                    Text("iPadOS kısayolları (⌘-Tab, Dünya tuşu) sonrasında bir tuş basılı kalırsa veya imleç kilidi çıkarsa bu düğmeyle sıfırlayabilirsiniz.")
+                    Text("İmleç hızı ve doğal kaydırma değişiklikleri sanal Mac yeniden başlatılmadan anında uygulanır. iPadOS kısayolları (⌘-Tab, Dünya tuşu) sonrasında bir tuş basılı kalırsa veya imleç kilidi çıkarsa bu düğmeyle sıfırlayabilirsiniz.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Dosya ve Pano Paylaşımı") {

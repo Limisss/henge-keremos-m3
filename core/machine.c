@@ -273,10 +273,7 @@ void hv_machine_free(HvMachine *m) {
         HvPerCpu *p = &m->percpu[i];
         free(p->ijc);
         free(p->ucode);
-        if (p->cid_chunks) {
-            for (int c = 0; c < 65536; c++) free(p->cid_chunks[c]);
-            free(p->cid_chunks);
-        }
+        free(p->cid_chunks);
         for (int k = 0; k < HV_STASHES; k++) {
             free(p->stash[k].slot);
             free(p->stash[k].ent);

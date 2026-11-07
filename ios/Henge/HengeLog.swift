@@ -419,9 +419,12 @@ enum HengeLog {
     private static func redactSensitiveData(in line: String) -> String {
         var s = line
         let replacements: [(String, String)] = [
+            ("/private/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+/Documents/(Machines|Exports)/[^\\s\"']+", "<UYGULAMA_BELGELER_DIZINI>/$1/<KULLANICI_DOSYASI>"),
+            ("/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+/Documents/(Machines|Exports)/[^\\s\"']+", "<UYGULAMA_BELGELER_DIZINI>/$1/<KULLANICI_DOSYASI>"),
             ("/private/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+", "<UYGULAMA_VERI_DIZINI>"),
             ("/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+", "<UYGULAMA_VERI_DIZINI>"),
             ("/var/containers/Bundle/Application/[0-9A-Fa-f-]+", "<UYGULAMA_PAKET_DIZINI>"),
+            ("/Users/[^/\\s]+", "/Users/<KULLANICI>"),
             ("com\\.henge\\.app(\\.jit-helper)?\\.[A-Z0-9]{8,12}", "com.henge.app$1.<TAKIM_ID>"),
             ("(?i)ECID[:=\\s]+(0x[0-9A-Fa-f]+|[0-9]+)", "ECID <GIZLENDI>"),
             ("(?i)(UDID|UniqueDeviceID|SerialNumber)[:=\\s]+[0-9A-Fa-f-]{8,40}", "$1: <GIZLENDI>"),

@@ -213,7 +213,7 @@ EOF
     ninja -C "$WORK/glib-build" install
 
     PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig" \
-    git clone --depth 1 --branch v4.8.0 https://gitlab.freedesktop.org/slirp/libslirp.git "$WORK/libslirp"
+    git clone --depth 1 --branch v4.9.0 https://gitlab.freedesktop.org/slirp/libslirp.git "$WORK/libslirp"
     PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig" \
     meson setup "$WORK/slirp-build" "$WORK/libslirp" \
         --cross-file "$WORK/ios-arm64.txt" \
