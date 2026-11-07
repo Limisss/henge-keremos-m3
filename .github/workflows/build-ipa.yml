@@ -15,9 +15,9 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen, CMake, Meson & Ninja
+      - name: Install XcodeGen, CMake, Meson, Ninja & Networking Static Deps
         run: |
-          brew install xcodegen cmake meson ninja pkg-config
+          brew install xcodegen cmake meson ninja pkg-config libslirp glib gettext pcre2
 
       - name: Fetch / Prepare iOS Dependencies
         run: |

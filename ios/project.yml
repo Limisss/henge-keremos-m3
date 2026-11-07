@@ -136,7 +136,7 @@ targets:
   HengeJITHelper:
     type: app-extension
     platform: iOS
-    deploymentTarget: "26.0"
+    deploymentTarget: "17.4"
     sources:
       - path: HengeJITHelper
         excludes:

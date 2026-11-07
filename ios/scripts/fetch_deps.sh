@@ -44,9 +44,15 @@ fi
 unzip -q "$IPA_SRC" -d "$WORK/ipa"
 
 FW_DIR="$DEPS/StikJIT.xcframework/ios-arm64/StikJIT.framework"
-rm -rf "$DEPS/StikJIT.xcframework"
-mkdir -p "$FW_DIR/Modules/StikJIT.swiftmodule"
+rm -rf "$DEPS/StikJIT.xcframework" "$DEPS/prebuilt"
+mkdir -p "$FW_DIR/Modules/StikJIT.swiftmodule" "$DEPS/prebuilt"
 cp -R "$WORK/ipa/Payload/Henge.app/Frameworks/StikJIT.framework/"* "$FW_DIR/"
+if [ -f "$WORK/ipa/Payload/Henge.app/Assets.car" ]; then
+    cp "$WORK/ipa/Payload/Henge.app/Assets.car" "$DEPS/prebuilt/Assets.car"
+fi
+if [ -d "$WORK/ipa/Payload/Henge.app/PlugIns/HengeJITHelper.appex" ]; then
+    cp -R "$WORK/ipa/Payload/Henge.app/PlugIns/HengeJITHelper.appex" "$DEPS/prebuilt/HengeJITHelper.appex"
+fi
 
 cat > "$DEPS/StikJIT.xcframework/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -175,16 +181,40 @@ EOF
 "${IOS_CC[@]}" -O2 -c "$WORK/husk_rppairing_stub.c" -o "$WORK/husk_rppairing_stub.o"
 xcrun --sdk iphoneos libtool -static -o "$DEPS/lib/libhusk_rppairing.a" "$WORK/husk_rppairing_stub.o"
 
-# 3. Cross-compile real libslirp + glib for arm64-apple-ios17.0 so guest NAT/DNS/DHCP and shared folder work
+# 3. Prepare real libslirp + glib for arm64-apple-ios17.0 so guest NAT/DNS/DHCP and shared folder work
 if [ ! -f "$DEPS/lib/libslirp.a" ]; then
-    echo "==> Cross-compiling glib and libslirp for arm64-apple-ios17.0..."
-    SYSROOT="$WORK/sysroot"
-    mkdir -p "$SYSROOT"
-    CLANG_PATH="$(xcrun --sdk iphoneos --find clang)"
-    AR_PATH="$(xcrun --sdk iphoneos --find ar)"
-    STRIP_PATH="$(xcrun --sdk iphoneos --find strip)"
+    BREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
+    if [ "$(uname -m)" = "arm64" ] && [ -n "$BREW_PREFIX" ] && [ -f "$BREW_PREFIX/opt/libslirp/lib/libslirp.a" ] && [ -f "$BREW_PREFIX/opt/glib/lib/libglib-2.0.a" ]; then
+        echo "==> Retagging arm64 Homebrew static libraries (libslirp, glib, intl, pcre2) for iOS 17.0..."
+        cp -R "$BREW_PREFIX/opt/libslirp/include/slirp/"* "$DEPS/include/slirp/"
+        retag_archive() {
+            local src_a="$1"
+            local dst_a="$2"
+            local sub="$WORK/retag_$(basename "$dst_a" .a)"
+            mkdir -p "$sub"
+            (
+                cd "$sub"
+                ar -x "$src_a"
+                for obj in *.o; do
+                    [ -f "$obj" ] || continue
+                    xcrun vtool -set-build-version ios 17.0 17.0 -replace -output "$obj" "$obj"
+                done
+                xcrun --sdk iphoneos libtool -static -no_warning_for_no_symbols -o "$dst_a" *.o
+            )
+        }
+        retag_archive "$BREW_PREFIX/opt/libslirp/lib/libslirp.a" "$DEPS/lib/libslirp.a"
+        retag_archive "$BREW_PREFIX/opt/glib/lib/libglib-2.0.a" "$DEPS/lib/libglib-2.0.a"
+        retag_archive "$BREW_PREFIX/opt/gettext/lib/libintl.a" "$DEPS/lib/libintl.a"
+        retag_archive "$BREW_PREFIX/opt/pcre2/lib/libpcre2-8.a" "$DEPS/lib/libpcre2-8.a"
+    else
+        echo "==> Cross-compiling glib and libslirp for arm64-apple-ios17.0..."
+        SYSROOT="$WORK/sysroot"
+        mkdir -p "$SYSROOT"
+        CLANG_PATH="$(xcrun --sdk iphoneos --find clang)"
+        AR_PATH="$(xcrun --sdk iphoneos --find ar)"
+        STRIP_PATH="$(xcrun --sdk iphoneos --find strip)"
 
-    cat > "$WORK/ios-arm64.txt" << EOF
+        cat > "$WORK/ios-arm64.txt" << EOF
 [binaries]
 c = ['$CLANG_PATH', '-arch', 'arm64', '-miphoneos-version-min=17.0', '-isysroot', '$IOS_SDK']
 cpp = ['$CLANG_PATH', '-arch', 'arm64', '-miphoneos-version-min=17.0', '-isysroot', '$IOS_SDK']
@@ -203,39 +233,40 @@ endian = 'little'
 needs_exe_wrapper = true
 EOF
 
-    curl -L --fail -o "$WORK/glib.tar.xz" "https://download.gnome.org/sources/glib/2.80/glib-2.80.5.tar.xz"
-    tar -xf "$WORK/glib.tar.xz" -C "$WORK"
-    meson setup "$WORK/glib-build" "$WORK/glib-2.80.5" \
-        --cross-file "$WORK/ios-arm64.txt" \
-        --prefix "$SYSROOT" \
-        --default-library=static \
-        -Dtests=false -Dglib_debug=disabled -Dintrospection=disabled -Dxattr=false -Dselinux=disabled
-    ninja -C "$WORK/glib-build" install
+        curl -L --fail -o "$WORK/glib.tar.xz" "https://download.gnome.org/sources/glib/2.80/glib-2.80.5.tar.xz"
+        tar -xf "$WORK/glib.tar.xz" -C "$WORK"
+        meson setup "$WORK/glib-build" "$WORK/glib-2.80.5" \
+            --cross-file "$WORK/ios-arm64.txt" \
+            --prefix "$SYSROOT" \
+            --default-library=static \
+            -Dtests=false -Dglib_debug=disabled -Dintrospection=disabled -Dxattr=false -Dselinux=disabled
+        ninja -C "$WORK/glib-build" install
 
-    PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig" \
-    git clone --depth 1 --branch v4.9.0 https://gitlab.freedesktop.org/slirp/libslirp.git "$WORK/libslirp"
-    PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig" \
-    meson setup "$WORK/slirp-build" "$WORK/libslirp" \
-        --cross-file "$WORK/ios-arm64.txt" \
-        --prefix "$SYSROOT" \
-        --default-library=static
-    ninja -C "$WORK/slirp-build" install
+        PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig" \
+        git clone --depth 1 --branch v4.9.0 https://gitlab.freedesktop.org/slirp/libslirp.git "$WORK/libslirp"
+        PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig" \
+        meson setup "$WORK/slirp-build" "$WORK/libslirp" \
+            --cross-file "$WORK/ios-arm64.txt" \
+            --prefix "$SYSROOT" \
+            --default-library=static
+        ninja -C "$WORK/slirp-build" install
 
-    cp "$SYSROOT/lib/libslirp.a" "$DEPS/lib/"
-    cp "$SYSROOT/lib/libglib-2.0.a" "$DEPS/lib/"
-    cp -R "$SYSROOT/include/slirp/"* "$DEPS/include/slirp/"
+        cp "$SYSROOT/lib/libslirp.a" "$DEPS/lib/"
+        cp "$SYSROOT/lib/libglib-2.0.a" "$DEPS/lib/"
+        cp -R "$SYSROOT/include/slirp/"* "$DEPS/include/slirp/"
 
-    cat > "$WORK/empty.c" << 'EOF'
+        cat > "$WORK/empty.c" << 'EOF'
 int henge_dep_placeholder(void) { return 0; }
 EOF
-    "${IOS_CC[@]}" -O2 -c "$WORK/empty.c" -o "$WORK/empty.o"
-    for l in libintl libpcre2-8; do
-        if [ -f "$SYSROOT/lib/$l.a" ]; then
-            cp "$SYSROOT/lib/$l.a" "$DEPS/lib/"
-        else
-            xcrun --sdk iphoneos libtool -static -o "$DEPS/lib/$l.a" "$WORK/empty.o"
-        fi
-    done
+        "${IOS_CC[@]}" -O2 -c "$WORK/empty.c" -o "$WORK/empty.o"
+        for l in libintl libpcre2-8; do
+            if [ -f "$SYSROOT/lib/$l.a" ]; then
+                cp "$SYSROOT/lib/$l.a" "$DEPS/lib/"
+            else
+                xcrun --sdk iphoneos libtool -static -o "$DEPS/lib/$l.a" "$WORK/empty.o"
+            fi
+        done
+    fi
 fi
 
 echo "==> deps ready in $DEPS (self-contained mode)"

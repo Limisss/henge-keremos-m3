@@ -17,12 +17,20 @@ DD="$IOS/build/DerivedData"
 xcodebuild -project Henge.xcodeproj -scheme Henge -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
     -derivedDataPath "$DD" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > "$DD.buildlog" 2>&1 || {
     # Never package what an older build left behind.
-    grep -E "error:|BUILD" "$DD.buildlog" | sort -u
+    grep -C 3 -E "error:|Undefined|ld:|BUILD" "$DD.buildlog" | tail -n 120 || true
     echo "==> the build failed; nothing packaged" >&2
     exit 1
 }
 grep -E "BUILD" "$DD.buildlog" || true
 APP="$DD/Build/Products/Release-iphoneos/Henge.app"
+if [ ! -f "$APP/Assets.car" ] && [ -f "$IOS/deps/prebuilt/Assets.car" ]; then
+    cp "$IOS/deps/prebuilt/Assets.car" "$APP/Assets.car"
+fi
+if [ -f "$IOS/deps/prebuilt/HengeJITHelper.appex/HengeJITHelper" ]; then
+    mkdir -p "$APP/PlugIns/HengeJITHelper.appex"
+    cp "$IOS/deps/prebuilt/HengeJITHelper.appex/HengeJITHelper" "$APP/PlugIns/HengeJITHelper.appex/HengeJITHelper"
+    cp "$IOS/deps/prebuilt/HengeJITHelper.appex/Info.plist" "$APP/PlugIns/HengeJITHelper.appex/Info.plist"
+fi
 rc=0
 for f in "$APP/Henge" "$APP/henge-jit.js" "$APP/PlugIns/HengeJITHelper.appex/HengeJITHelper" \
          "$APP/Frameworks/StikJIT.framework/StikJIT" "$APP/Frameworks/StikJIT.framework/Info.plist"; do
