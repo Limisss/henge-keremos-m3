@@ -118,7 +118,12 @@ static void *worker(void *opaque) {
     uint64_t t_last = now_us(), busy = 0, reqs = 0, bytes = 0, flushes = 0, flush_us = 0;
     for (;;) {
         pthread_mutex_lock(&b->mu);
-        while (b->fence || b->claimed == __atomic_load_n(&b->submitted, __ATOMIC_ACQUIRE)) pthread_cond_wait(&b->cv, &b->mu);
+        while (!b->stopping && (b->fence || b->claimed == __atomic_load_n(&b->submitted, __ATOMIC_ACQUIRE)))
+            pthread_cond_wait(&b->cv, &b->mu);
+        if (b->stopping) {
+            pthread_mutex_unlock(&b->mu);
+            break;
+        }
         HvVblkReq *r = &b->ring[b->claimed % HV_VBLK_RING];
         uint32_t type = 0;
         hv_virtq_read(&b->vio, &r->e, 0, &type, 4);
@@ -268,4 +273,20 @@ HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int a
     }
     hv_pcie_attach(bus, &v->pci);
     return b;
+}
+
+void hv_virtio_blk_destroy(HvVirtioBlk *b) {
+    if (!b) return;
+    pthread_mutex_lock(&b->mu);
+    b->stopping = 1;
+    pthread_cond_broadcast(&b->cv);
+    pthread_mutex_unlock(&b->mu);
+    for (int i = 0; i < HV_VBLK_WORKERS; i++) {
+        if (b->worker[i]) {
+            pthread_join(b->worker[i], NULL);
+            b->worker[i] = 0;
+        }
+    }
+    free(b->ring);
+    free(b);
 }

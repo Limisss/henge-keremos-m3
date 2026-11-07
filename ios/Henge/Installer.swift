@@ -97,10 +97,17 @@ final class Installer: NSObject, ObservableObject {
         ]
         for candidate in candidates {
             if let size = (try? candidate.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, Int64(size) > r.bytes / 2 {
-                try? FileManager.default.createDirectory(at: imageDirectory, withIntermediateDirectories: true)
-                Machines.excludeFromBackup(imageDirectory)
-                try? FileManager.default.moveItem(at: candidate, to: dest)
-                return Int64(size)
+                do {
+                    try FileManager.default.createDirectory(at: imageDirectory, withIntermediateDirectories: true)
+                    Machines.excludeFromBackup(imageDirectory)
+                    if FileManager.default.fileExists(atPath: dest.path) {
+                        try FileManager.default.removeItem(at: dest)
+                    }
+                    try FileManager.default.moveItem(at: candidate, to: dest)
+                    return Int64(size)
+                } catch {
+                    HengeLog.log("install", "failed to adopt IPSW from Documents: \(error.localizedDescription)")
+                }
             }
         }
         return nil

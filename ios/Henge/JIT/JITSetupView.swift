@@ -79,8 +79,8 @@ struct JITSetupFlow: View {
                      ok: LocalDevVPN.isInstalled,
                      detail: LocalDevVPN.isInstalled ? "Yüklü (JIT açılırken bağlı olmalı)" : "App Store'dan yüklenmeli")
             checkRow("Kod Çalıştırma Testi (RX Selftest)",
-                     ok: JITBootstrap.isLive,
-                     detail: JITBootstrap.isLive ? "Doğrulandı (1 GB çift eşlemeli bölge aktif)" : (JITBootstrap.debuggedFlag ? "Debugger bağlı, selftest bekleniyor" : "Henüz çalışmadı"))
+                     ok: JITBootstrap.prewarmed && JITBootstrap.isLive,
+                     detail: (JITBootstrap.prewarmed && JITBootstrap.isLive) ? "Doğrulandı (1 GB çift eşlemeli bölge aktif)" : (JITBootstrap.debuggedFlag ? "Debugger bağlı, selftest bekleniyor" : "Henüz çalışmadı"))
         }
         .padding(14)
         .hengeCard()

@@ -735,7 +735,6 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
     region.rw_addr = (uint8_t *)rw;
     region.rx_addr = (uint8_t *)rx;
     region.size    = bytes;
-    atomic_store(&g_jit_available, true);
 
     HENGE_LOG("#%llu: dual mapping established: rw=%p rx=%p size=%zu diff=%+lld",
              (unsigned long long)n, (void *)region.rw_addr, (void *)region.rx_addr,
@@ -747,10 +746,12 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
                  "Refusing to hand it to TCG; QEMU would crash on its first "
                  "generated block instead of failing here.",
                  (unsigned long long)n);
+        atomic_store(&g_jit_available, false);
         henge_ios_jit_release(&region);
         return region;
     }
 
+    atomic_store(&g_jit_available, true);
     return region;
 }
 

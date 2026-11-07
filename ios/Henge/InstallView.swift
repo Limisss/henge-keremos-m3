@@ -250,8 +250,10 @@ struct InstallView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Kurulum Tamamlanamadı").font(.system(size: 22, weight: .bold))
             Text(text).font(.system(size: 15))
-            Text("İndirilen macOS kurulum dosyası (IPSW) cihazda korundu; yeniden indirme yapılmaz.")
-                .font(.system(size: 13, weight: .medium)).foregroundStyle(Desk.good)
+            if Installer.haveImage(installer.retryContext?.release ?? release) {
+                Text("İndirilen macOS kurulum dosyası (IPSW) cihazda korundu; yeniden indirme yapılmaz.")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Desk.good)
+            }
             if installer.canRetryInProcessWith3GB {
                 Text("Başarısız bellek ayırma kaynakları temizlendi. Uygulamayı kapatmadan doğrudan 3 GB RAM ile tekrar deneyebilirsiniz:")
                     .font(.system(size: 13)).foregroundStyle(Desk.dim)

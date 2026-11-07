@@ -165,15 +165,12 @@ enum JITBootstrap {
     }
 
     /// Whether Henge has verified executable JIT memory right now.
+    /// Pure read: safe to evaluate from SwiftUI view bodies and diagnostic reports without triggering a brk trap.
     /// Never reports true solely because CS_DEBUGGED is set: the 1 GB dual-mapped region must be claimed
     /// and pass the native RX execution selftest (`isLive`, returning 42) first.
     static var ready: Bool {
         if prewarmed && isLive { return true }
         if !deviceEnforcesTXM, mapJITResult == true { return true }
-        if debuggedFlag && !trapPrewarmAttempted {
-            trapPrewarmAttempted = true
-            return prewarm() && isLive
-        }
         guard canGrantOwnJIT, !selfGrantTried else { return false }
         return prewarm() && (isLive || mapJITResult == true)
     }

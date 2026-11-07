@@ -197,24 +197,19 @@ static uint8_t *alloc_no_footprint(uint64_t size) {
 /* A mapped file's page is slow to touch the first time and as fast as any other
    afterwards, so a background thread gets there before the guest does. Adding
    zero dirties the page without changing it, whatever the guest has written. */
-#if __has_include(<os/proc.h>)
+#if TARGET_OS_IOS && __has_include(<os/proc.h>)
 #include <os/proc.h>
 #define HAVE_OS_PROC 1
 #endif
 
-struct PrefaultArgs {
-    uint8_t *ram;
-    uint64_t size;
-};
-
 static void *prefault_thread(void *arg) {
-    struct PrefaultArgs a = *(struct PrefaultArgs *)arg;
-    free(arg);
+    HvVmapple *b = (HvVmapple *)arg;
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     uint64_t touched = 0;
-    for (uint64_t off = 0; off < a.size; off += 0x4000) {
+    for (uint64_t off = 0; off < b->ram_size; off += 0x4000) {
+        if (__atomic_load_n(&b->prefault_stop, __ATOMIC_ACQUIRE)) break;
 #if HAVE_OS_PROC
         if ((off & ((64ull << 20) - 1)) == 0) {
             size_t avail = os_proc_available_memory();
@@ -225,12 +220,12 @@ static void *prefault_thread(void *arg) {
             }
         }
 #endif
-        __atomic_fetch_add((volatile uint64_t *)(a.ram + off), 0, __ATOMIC_RELAXED);
+        __atomic_fetch_add((volatile uint64_t *)(b->ram + off), 0, __ATOMIC_RELAXED);
         touched = off + 0x4000;
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     fprintf(stderr, "hengevm: guest RAM file prefaulted %llu/%llu MB in %.1f s\n",
-            (unsigned long long)(touched >> 20), (unsigned long long)(a.size >> 20),
+            (unsigned long long)(touched >> 20), (unsigned long long)(b->ram_size >> 20),
             (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
     return NULL;
 }
@@ -317,12 +312,9 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, uint64_t ram_size,
         return -1;
     }
     if (backed_by_file && !getenv("HV_RAM_NO_PREFAULT")) {
-        struct PrefaultArgs *a = malloc(sizeof *a);
-        if (a) {
-            a->ram = b->ram, a->size = ram_size;
-            pthread_t t;
-            if (pthread_create(&t, NULL, prefault_thread, a) == 0) pthread_detach(t);
-            else free(a);
+        __atomic_store_n(&b->prefault_stop, 0, __ATOMIC_RELEASE);
+        if (pthread_create(&b->prefault_tid, NULL, prefault_thread, b) == 0) {
+            b->prefault_running = 1;
         }
     }
 
@@ -386,6 +378,19 @@ void hv_vmapple_reset_cpu(HvVmapple *b) {
 
 void hv_vmapple_free(HvVmapple *b) {
     if (!b) return;
+    if (b->prefault_running) {
+        __atomic_store_n(&b->prefault_stop, 1, __ATOMIC_RELEASE);
+        pthread_join(b->prefault_tid, NULL);
+        b->prefault_running = 0;
+    }
+    if (b->aux_blk) {
+        hv_virtio_blk_destroy(b->aux_blk);
+        b->aux_blk = NULL;
+    }
+    if (b->root_blk) {
+        hv_virtio_blk_destroy(b->root_blk);
+        b->root_blk = NULL;
+    }
     if (b->ram && b->ram != MAP_FAILED && b->ram_size > 0) {
         munmap(b->ram, b->ram_size);
         b->ram = NULL;

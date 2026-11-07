@@ -423,7 +423,10 @@ enum HengeLog {
             ("/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+", "<UYGULAMA_VERI_DIZINI>"),
             ("/var/containers/Bundle/Application/[0-9A-Fa-f-]+", "<UYGULAMA_PAKET_DIZINI>"),
             ("com\\.henge\\.app(\\.jit-helper)?\\.[A-Z0-9]{8,12}", "com.henge.app$1.<TAKIM_ID>"),
-            ("ECID\\s+[0-9]+", "ECID <GIZLENDI>"),
+            ("(?i)ECID[:=\\s]+(0x[0-9A-Fa-f]+|[0-9]+)", "ECID <GIZLENDI>"),
+            ("(?i)(UDID|UniqueDeviceID|SerialNumber)[:=\\s]+[0-9A-Fa-f-]{8,40}", "$1: <GIZLENDI>"),
+            ("\\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}\\b", "<CIHAZ_UDID>"),
+            ("\\b[0-9a-fA-F]{40}\\b", "<CIHAZ_UDID_VE_SHA1>"),
             ("(public_key|private_key|script-data|identifier)=[^&\\s]+", "$1=<GIZLENDI>"),
             ("[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", "<UUID>")
         ]

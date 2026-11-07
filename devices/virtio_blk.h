@@ -41,10 +41,12 @@ typedef struct HvVirtioBlk {
     uint32_t published;  /* CPU thread: completions pushed to the used ring */
     pthread_mutex_t mu;
     pthread_cond_t cv;
+    int stopping;
     pthread_t worker[HV_VBLK_WORKERS];
 } HvVirtioBlk;
 
 HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int apple_variant);
+void hv_virtio_blk_destroy(HvVirtioBlk *b);
 /* CPU thread: publish finished requests and raise the interrupt. */
 void hv_virtio_blk_poll(HvVirtioBlk *b);
 /* Tests: wait for the worker to finish everything submitted, then publish it. */

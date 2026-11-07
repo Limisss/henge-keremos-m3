@@ -52,6 +52,9 @@ static int wake_pipe[2];
 static Timer timers[MAX_TIMERS];
 static struct pollfd pfds[MAX_POLL];
 static int npfd;
+static pthread_t net_tid;
+static int net_running;
+static int net_stop;
 uint64_t hv_net_tx_frames, hv_net_rx_frames;
 
 static char share_socket[256];
@@ -195,7 +198,7 @@ static const SlirpCb callbacks = {
 
 static void *net_thread(void *unused) {
     (void)unused;
-    for (;;) {
+    while (!__atomic_load_n(&net_stop, __ATOMIC_ACQUIRE)) {
         uint32_t timeout = 1000;
         int64_t now = now_ms();
         for (int i = 0; i < MAX_TIMERS; i++)
@@ -208,6 +211,7 @@ static void *net_thread(void *unused) {
         pfds[npfd++] = (struct pollfd){wake_pipe[0], POLLIN, 0};
         slirp_pollfds_fill_socket(slirp, &timeout, add_poll, NULL);
         int r = poll(pfds, (nfds_t)npfd, (int)timeout);
+        if (__atomic_load_n(&net_stop, __ATOMIC_ACQUIRE)) break;
         if (pfds[0].revents & POLLIN) {
             char buf[64];
             while (read(wake_pipe[0], buf, sizeof buf) > 0) {}
@@ -298,7 +302,24 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
     }
     net = n;
     n->transmit = transmit;
-    pthread_t t;
-    pthread_create(&t, NULL, net_thread, NULL);
+    __atomic_store_n(&net_stop, 0, __ATOMIC_RELEASE);
+    if (pthread_create(&net_tid, NULL, net_thread, NULL) == 0) net_running = 1;
     return 0;
+}
+
+void hv_net_detach(void) {
+    if (!net_running) return;
+    __atomic_store_n(&net_stop, 1, __ATOMIC_RELEASE);
+    char c = 0;
+    (void)!write(wake_pipe[1], &c, 1);
+    pthread_join(net_tid, NULL);
+    net_running = 0;
+    if (slirp) {
+        slirp_cleanup(slirp);
+        slirp = NULL;
+    }
+    close(wake_pipe[0]);
+    close(wake_pipe[1]);
+    net = NULL;
+    machine = NULL;
 }

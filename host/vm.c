@@ -312,6 +312,10 @@ void hv_vm_destroy_unstarted(void) {
     os_unfair_lock_lock(&display_lock);
     atomic_store_explicit(&display_pvg, NULL, memory_order_release);
     os_unfair_lock_unlock(&display_lock);
+    if (net_on) {
+        hv_net_detach();
+        net_on = 0;
+    }
     hv_vmapple_free(&board);
     hv_machine_free(&m);
     hv_disk_close(&aux);

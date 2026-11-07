@@ -261,7 +261,7 @@ void hv_machine_wake(HvMachine *m) {
 }
 
 void hv_machine_free(HvMachine *m) {
-    if (m->jit.rw) hv_jit_reset(&m->jit);
+    if (m->jit.base) hv_jit_reset(&m->jit);
     hv_jit_region_close(&m->jit);
     for (int i = 0; i < m->nram; i++) {
         free(m->ram[i].code_pages);
