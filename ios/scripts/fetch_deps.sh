@@ -84,8 +84,8 @@ cat > "$DEPS/StikJIT.xcframework/Info.plist" << 'EOF'
 </plist>
 EOF
 
-# Synthesize the exact ABI-matching Swift interface for StikJIT 1.9.0 so HengeJITHelper links cleanly
-if [ ! -f "$FW_DIR/Modules/StikJIT.swiftmodule/arm64-apple-ios.swiftinterface" ]; then
+# Synthesize the exact ABI-matching Swift module for StikJIT 1.9.0 so HengeJITHelper compiles cleanly
+if [ ! -f "$FW_DIR/Modules/StikJIT.swiftmodule/arm64-apple-ios.swiftmodule" ]; then
     cat > "$WORK/StikJITStub.swift" << 'EOF'
 import Foundation
 
@@ -135,10 +135,12 @@ public enum StikJIT {
 }
 EOF
     IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-    xcrun --sdk iphoneos swiftc -emit-module -emit-module-interface-path \
-        "$FW_DIR/Modules/StikJIT.swiftmodule/arm64-apple-ios.swiftinterface" \
-        -module-name StikJIT -enable-library-evolution -swift-version 5 \
-        -target arm64-apple-ios17.0 -sdk "$IOS_SDK" "$WORK/StikJITStub.swift" -o "$WORK/StikJIT.swiftmodule"
+    xcrun --sdk iphoneos swiftc -emit-module -emit-module-path \
+        "$FW_DIR/Modules/StikJIT.swiftmodule/arm64-apple-ios.swiftmodule" \
+        -module-name StikJIT -swift-version 5 \
+        -target arm64-apple-ios17.4 -sdk "$IOS_SDK" "$WORK/StikJITStub.swift"
+    cp "$FW_DIR/Modules/StikJIT.swiftmodule/arm64-apple-ios.swiftmodule" \
+       "$FW_DIR/Modules/StikJIT.swiftmodule/arm64.swiftmodule"
 fi
 
 # 2. Build fallback libhusk_rppairing.a (returns informative message directing to import pairingFile.plist)
