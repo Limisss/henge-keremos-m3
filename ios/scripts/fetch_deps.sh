@@ -197,10 +197,25 @@ if [ ! -f "$DEPS/lib/libslirp.a" ]; then
             (
                 cd "$sub"
                 ar -x "$src_a"
-                for obj in *.o; do
-                    [ -f "$obj" ] || continue
-                    xcrun vtool -set-build-version ios 17.0 17.0 -replace -output "$obj" "$obj"
-                done
+                python3 - << 'PYEOF'
+import glob, struct
+for p in glob.glob("*.o"):
+    data = bytearray(open(p, "rb").read())
+    if len(data) < 32:
+        continue
+    magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved = struct.unpack_from("<IIIIIIII", data, 0)
+    if magic != 0xFEEDFACF:
+        continue
+    off = 32
+    for _ in range(ncmds):
+        if off + 8 > len(data):
+            break
+        cmd, cmdsize = struct.unpack_from("<II", data, off)
+        if cmd == 0x32 and cmdsize >= 24:  # LC_BUILD_VERSION
+            struct.pack_into("<III", data, off + 8, 2, 0x00110000, 0x00110000)  # PLATFORM_IOS, 17.0, 17.0
+        off += cmdsize
+    open(p, "wb").write(data)
+PYEOF
                 xcrun --sdk iphoneos libtool -static -no_warning_for_no_symbols -o "$dst_a" *.o
             )
         }
