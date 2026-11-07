@@ -63,46 +63,91 @@ struct JITSetupFlow: View {
 
     // MARK: Choose
 
+    private var preflightChecklist: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("JIT Ön Kontrol Listesi").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textDim)
+            checkRow("İmza İzni (get-task-allow)",
+                     ok: Entitlements.getTaskAllow || JITBootstrap.isJailbroken || JITBootstrap.isInstalledWithTrollStore,
+                     detail: Entitlements.getTaskAllow ? "Açık (Sideloadly / Geliştirme imzası)" : "Kapalı — ESign/dağıtım sertifikasında JIT çalışmaz")
+            checkRow("Yardımcı Uzantı (HengeJITHelper)",
+                     ok: HengeBuiltInJIT.helperIdentifier != nil,
+                     detail: HengeBuiltInJIT.helperIdentifier ?? "Eksik — İmzalarken uygulama uzantılarını koruyun")
+            checkRow("Eşleştirme Dosyası (pairingFile.plist)",
+                     ok: jit.hasPairing,
+                     detail: jit.hasPairing ? (jit.pairingSource == .onDevice ? "Cihaz üzerinde eşleştirildi" : "Bilgisayardan içe aktarıldı") : "Henüz içe aktarılmadı")
+            checkRow("LocalDevVPN Uygulaması",
+                     ok: LocalDevVPN.isInstalled,
+                     detail: LocalDevVPN.isInstalled ? "Yüklü (JIT açılırken bağlı olmalı)" : "App Store'dan yüklenmeli")
+            checkRow("Kod Çalıştırma Testi (RX Selftest)",
+                     ok: JITBootstrap.isLive,
+                     detail: JITBootstrap.isLive ? "Doğrulandı (1 GB çift eşlemeli bölge aktif)" : (JITBootstrap.debuggedFlag ? "Debugger bağlı, selftest bekleniyor" : "Henüz çalışmadı"))
+        }
+        .padding(14)
+        .hengeCard()
+    }
+
+    private func checkRow(_ title: String, ok: Bool, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(ok ? .green : .orange)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.text)
+                Text(detail).font(.system(size: 12)).foregroundStyle(Theme.textDim)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
     private var choose: some View {
-        page(symbol: "bolt.fill", title: "Turn on JIT",
-             subtitle: "A Mac needs memory it can write and then run, which on iOS only an attached "
-                     + "debugger can grant. Choose how your \(device) gets one.") {
+        page(symbol: "bolt.fill", title: "JIT Kurulumu ve Doğrulama",
+             subtitle: "macOS emülasyonu için yazılabilir ve çalıştırılabilir (RX/RW) bellek gerekir. iPadOS 27'de bunu yalnızca 'get-task-allow' iznine sahip bir hata ayıklayıcı (debugger) verebilir.") {
+            preflightChecklist
+            if let problem = jit.connectionProblem {
+                outcome("\(problem.categoryTitle): \(problem.message)", ok: false)
+            }
             VStack(spacing: 10) {
                 let builtIn = HengeBuiltInJIT.unavailableReason
-                way("Pair on this \(device)", symbol: "iphone.radiowaves.left.and.right",
-                    detail: builtIn ?? (!OnDevicePairing.isSupported ? "Needs iOS 27 or later."
-                        : jit.pairingSource == .onDevice ? "Paired on this \(device)."
-                        : "No computer needed. Pairs from Settings in a minute."),
+                let canAttach = Entitlements.getTaskAllow || JITBootstrap.isJailbroken || JITBootstrap.isInstalledWithTrollStore
+                way("Bu \(device) üzerinde eşleştir", symbol: "iphone.radiowaves.left.and.right",
+                    detail: !canAttach ? "İmzada 'get-task-allow' kapalı olduğu için kullanılamaz."
+                        : builtIn ?? (!OnDevicePairing.isSupported ? "iOS 27 veya üzeri gerekir."
+                        : jit.pairingSource == .onDevice ? "Bu \(device) üzerinde eşleştirildi."
+                        : "Bilgisayar gerekmez. Ayarlar › Geliştirici Modu üzerinden eşleştirir."),
                     done: jit.pairingSource == .onDevice,
-                    enabled: builtIn == nil && OnDevicePairing.isSupported) { path.append(.pairOnDevice) }
-                way("Use a pairing file", symbol: "doc.badge.plus",
-                    detail: builtIn ?? (jit.pairingSource == .imported ? "Pairing file imported."
-                        : "Import a pairing file made on a computer."),
+                    enabled: canAttach && builtIn == nil && OnDevicePairing.isSupported) { path.append(.pairOnDevice) }
+                way("Eşleştirme dosyası kullan (Önerilen)", symbol: "doc.badge.plus",
+                    detail: !canAttach ? "İmzada 'get-task-allow' kapalı olduğu için kullanılamaz."
+                        : builtIn ?? (jit.pairingSource == .imported ? "Eşleştirme dosyası içe aktarıldı."
+                        : "Bilgisayarda oluşturulan pairingFile.plist dosyasını içe aktarın."),
                     done: jit.pairingSource == .imported,
-                    enabled: builtIn == nil) { path.append(.importFile) }
-                way("Use StikDebug", symbol: "ant",
-                    detail: JITBootstrap.isStikDebugInstalled ? "StikDebug is installed."
-                        : "Enable JIT through the StikDebug app.",
-                    done: jit.method == .stikDebug) { path.append(.stikDebug) }
-                way("Use TrollStore", symbol: "sparkles",
-                    detail: JITBootstrap.isTrollStoreInstalled ? "TrollStore is installed."
-                        : "For a Henge installed through TrollStore.",
+                    enabled: canAttach && builtIn == nil) { path.append(.importFile) }
+                way("StikDebug kullan", symbol: "ant",
+                    detail: !canAttach ? "İmzada 'get-task-allow' kapalı olduğu için StikDebug bağlanamaz."
+                        : JITBootstrap.isStikDebugInstalled ? "StikDebug yüklü."
+                        : "Harici StikDebug uygulaması üzerinden JIT açın.",
+                    done: jit.method == .stikDebug,
+                    enabled: canAttach) { path.append(.stikDebug) }
+                way("TrollStore kullan", symbol: "sparkles",
+                    detail: JITBootstrap.isTrollStoreInstalled ? "TrollStore yüklü."
+                        : "TrollStore ile kurulmuş Henge için (iOS 14.0–17.0).",
                     done: jit.method == .trollStore) { path.append(.trollStore) }
-                way("Use a jailbreak", symbol: "lock.open",
-                    detail: JITBootstrap.debuggedAtLaunch ? "JIT was already on when Henge opened."
-                        : JITBootstrap.isJailbroken ? "A jailbreak was found. Turn on Allow JIT in Apps."
-                        : "Dopamine can give every app JIT with one setting.",
+                way("Jailbreak kullan", symbol: "lock.open",
+                    detail: JITBootstrap.debuggedAtLaunch ? "Henge açıldığında JIT zaten aktifti."
+                        : JITBootstrap.isJailbroken ? "Jailbreak algılandı. Allow JIT in Apps ayarını açın."
+                        : "Dopamine üzerinden tek ayarla JIT sağlar.",
                     done: jit.method == .jailbreak || JITBootstrap.debuggedAtLaunch) { path.append(.jailbreak) }
             }
-            if jit.hasPairing && HengeBuiltInJIT.isAvailable {
+            if jit.hasPairing && HengeBuiltInJIT.isAvailable && Entitlements.getTaskAllow {
                 Button { path.append(.connect) } label: {
-                    Label("Continue with the current pairing", systemImage: "arrow.right")
+                    Label("Mevcut eşleştirmeyle devam et", systemImage: "arrow.right")
                         .font(.system(size: 14, weight: .semibold))
                 }
                 .padding(.top, 4)
             }
         } actions: {
-            Button("Not now") { close() }
+            Button("Şimdi değil") { close() }
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(Theme.textDim)
         }
@@ -145,19 +190,16 @@ struct JITSetupFlow: View {
     }
 
     private var pairOnDevice: some View {
-        page(symbol: "iphone.radiowaves.left.and.right", title: "Pair on this \(device)",
-             subtitle: "Henge pretends to be a computer on your Wi-Fi, and your \(device) pairs with it "
-                     + "the way it would with a Mac.") {
+        page(symbol: "iphone.radiowaves.left.and.right", title: "Bu \(device) Üzerinde Eşleştir",
+             subtitle: "Henge Wi-Fi ağınızda bir bilgisayar gibi davranır ve \(device) cihazınız tıpkı bir Mac ile eşleşir gibi eşleşir.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Turn on Wi-Fi, tap **Start pairing** below and allow Local Network access.",
+                point(1, "Wi-Fi'yi açın, aşağıdaki **Eşleştirmeyi Başlat** düğmesine dokunun ve Yerel Ağ erişimine izin verin.",
                       done: pairing.phase != .idle)
-                point(2, "Open **Settings › Privacy & Security › Developer Mode**, scroll down and tap "
-                       + "**Pair with \(OnDevicePairing.hostName)**.",
+                point(2, "**Ayarlar › Gizlilik ve Güvenlik › Geliştirici Modu** bölümünü açın, aşağı kaydırıp **\(OnDevicePairing.hostName) ile Eşleştir** seçeneğine dokunun.",
                       done: pairing.isShowingPin || pairedOnDevice)
-                point(3, "Enter the code Henge shows. It also appears in a banner and a notification, "
-                       + "so you don't have to switch back.",
+                point(3, "Henge'in gösterdiği eşleştirme kodunu girin (bildirim olarak da gösterilir).",
                       done: pairedOnDevice)
-                point(4, "Come back to Henge.", done: pairedOnDevice)
+                point(4, "Henge uygulamasına geri dönün.", done: pairedOnDevice)
             }
             .padding(16).hengeCard()
             pairingStatus
@@ -165,15 +207,15 @@ struct JITSetupFlow: View {
             switch pairing.phase {
             case .idle, .failed:
                 Button { pairing.start() } label: {
-                    Label("Start pairing", systemImage: "dot.radiowaves.left.and.right")
+                    Label("Eşleştirmeyi Başlat", systemImage: "dot.radiowaves.left.and.right")
                 }
                 .buttonStyle(PrimaryButtonStyle())
             case .waiting, .pin:
-                Button("Cancel pairing", role: .cancel) { pairing.cancel() }
+                Button("Eşleştirmeyi İptal Et", role: .cancel) { pairing.cancel() }
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Theme.textDim)
             case .paired:
-                Button("Continue") { path.append(.connect) }
+                Button("Devam Et") { path.append(.connect) }
                     .buttonStyle(PrimaryButtonStyle())
             }
         }
@@ -187,16 +229,15 @@ struct JITSetupFlow: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
                     ProgressView().tint(Theme.accent)
-                    Text("Waiting for your \(device)…").font(.system(size: 15, weight: .semibold))
+                    Text("\(device) bekleniyor…").font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Theme.text)
                 }
-                Button("Open Settings") {
+                Button("Ayarlar'ı Aç") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 }
                 .font(.system(size: 14, weight: .semibold))
                 if pairing.backgroundLimited {
-                    Text("This installation can only wait about 30 seconds in the background, "
-                       + "so go to Settings straight away.")
+                    Text("Bu kurulum arka planda yalnızca ~30 saniye bekleyebilir; hemen Ayarlar'a geçin.")
                         .font(.system(size: 13)).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -205,17 +246,17 @@ struct JITSetupFlow: View {
             .padding(16).hengeCard()
         case .pin(let pin):
             VStack(spacing: 8) {
-                Text("Enter this code on your \(device)").font(.system(size: 14))
+                Text("Bu kodu \(device) ekranında girin").font(.system(size: 14))
                     .foregroundStyle(Theme.textDim)
                 Text(pin).font(.system(size: 40, weight: .bold, design: .monospaced)).tracking(6)
                     .foregroundStyle(Theme.text)
                     .textSelection(.enabled)
-                    .accessibilityLabel("Pairing code \(pin.map(String.init).joined(separator: " "))")
+                    .accessibilityLabel("Eşleştirme kodu \(pin.map(String.init).joined(separator: " "))")
             }
             .frame(maxWidth: .infinity)
             .padding(18).hengeCard(high: true)
         case .paired(let name):
-            outcome("Paired with \(name)", ok: true)
+            outcome("\(name) ile eşleştirildi", ok: true)
         case .failed(let message):
             outcome(message, ok: false)
         }
@@ -224,28 +265,27 @@ struct JITSetupFlow: View {
     // MARK: Import a pairing file
 
     private var importFile: some View {
-        page(symbol: "doc.badge.plus", title: "Use a pairing file",
-             subtitle: "A pairing file made on a computer lets Henge talk to this \(device) the same way.") {
+        page(symbol: "doc.badge.plus", title: "Eşleştirme Dosyası Kullan",
+             subtitle: "Bilgisayarda oluşturulan eşleştirme dosyası (pairingFile.plist), Henge'in yerleşik StikJIT yardımcısının bu \(device) ile konuşmasını sağlar.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "On a computer, make this \(device)'s pairing file with the "
-                       + "[StikDebug pairing-file guide](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md).",
+                point(1, "Bilgisayarınızda [StikDebug eşleştirme rehberi](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md) ile bu \(device) için eşleştirme dosyası oluşturun.",
                       done: jit.pairingSource == .imported)
-                point(2, "Save it to Files, or AirDrop it to this \(device).",
+                point(2, "Dosyayı Dosyalar (Files) uygulamasına kaydedin.",
                       done: jit.pairingSource == .imported)
-                point(3, "Tap **Choose pairing file** and pick it.", done: jit.pairingSource == .imported)
+                point(3, "**Eşleştirme Dosyası Seç** düğmesine dokunup dosyayı içe aktarın.", done: jit.pairingSource == .imported)
             }
             .padding(16).hengeCard()
-            Label("The pairing file stays in Henge's Documents folder and is only sent to Henge's own helper.",
+            Label("Eşleştirme dosyası yalnızca Henge'in kendi belgeler klasöründe tutulur ve tanılama raporlarında otomatik temizlenir.",
                   systemImage: "lock.fill")
                 .font(.system(size: 13)).foregroundStyle(Theme.textDim)
             if let error = jit.error { outcome(error, ok: false) }
         } actions: {
             if jit.pairingSource == .imported {
-                Button("Continue") { path.append(.connect) }.buttonStyle(PrimaryButtonStyle())
-                Button("Choose another file") { importing = true }
+                Button("Devam Et") { path.append(.connect) }.buttonStyle(PrimaryButtonStyle())
+                Button("Başka bir dosya seç") { importing = true }
                     .font(.system(size: 15, weight: .medium))
             } else {
-                Button { importing = true } label: { Label("Choose pairing file", systemImage: "folder") }
+                Button { importing = true } label: { Label("Eşleştirme Dosyası Seç", systemImage: "folder") }
                     .buttonStyle(PrimaryButtonStyle())
             }
         }
@@ -254,58 +294,63 @@ struct JITSetupFlow: View {
     // MARK: LocalDevVPN
 
     private var connect: some View {
-        page(symbol: "network.badge.shield.half.filled", title: "Connect LocalDevVPN",
-             subtitle: "Henge's helper reaches this \(device)'s debugging service through a local VPN. "
-                     + "Nothing leaves your \(device).") {
+        page(symbol: "network.badge.shield.half.filled", title: "LocalDevVPN'i Bağla",
+             subtitle: "Henge'in JIT yardımcısı, cihazın hata ayıklama servisine yerel bir tünel (LocalDevVPN) üzerinden ulaşır. Cihaz dışına hiçbir veri çıkmaz.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Install [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)) from the App Store.",
+                point(1, "App Store'dan [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)) uygulamasını yükleyin.",
                       done: LocalDevVPN.isInstalled)
-                point(2, "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to Henge.")
-                point(3, "Leave it connected whenever you turn JIT on.")
+                point(2, "**LocalDevVPN'i Bağla** düğmesine dokunun. VPN açılır ve otomatik olarak Henge'e döner.")
+                point(3, "JIT açılırken VPN bağlantısını açık tutun.")
             }
             .padding(16).hengeCard()
         } actions: {
             Button(LocalDevVPN.actionTitle) { LocalDevVPN.open() }
                 .buttonStyle(PrimaryButtonStyle())
-            Button("It's connected") { path.append(.enable) }
+            Button("VPN Bağlandı, Devam Et") { path.append(.enable) }
                 .font(.system(size: 15, weight: .medium))
         }
     }
 
     // MARK: Enable
 
-    private var attached: Bool { jit.attachGeneration > 0 || JITBootstrap.debuggedFlag }
+    /// Strictly requires both `ready` and `isLive` (native RX selftest == 42) before reporting JIT as active.
+    private var attached: Bool { JITBootstrap.ready && JITBootstrap.isLive }
 
     private var enable: some View {
-        page(symbol: "bolt.badge.checkmark", title: "Turn on JIT",
-             subtitle: "The first check downloads and mounts Apple's Developer Disk Image, "
-                     + "which can take a minute.") {
+        page(symbol: "bolt.badge.checkmark", title: "JIT'i Etkinleştir ve Doğrula",
+             subtitle: "İlk kontrolde Apple'ın Geliştirici Disk Görüntüsü (DDI) hazırlanır; ardından 1 GB JIT bölgesi ayrılıp gerçek kod çalıştırma testi (RX Selftest) doğrulanır.") {
+            preflightChecklist
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Tap **Check setup**. Henge checks LocalDevVPN and prepares the Developer Disk Image.",
+                point(1, "**Kurulumu Kontrol Et** düğmesine dokunun. LocalDevVPN ve Geliştirici Disk Görüntüsü doğrulanır.",
                       done: jit.prepared || attached)
-                point(2, "Tap **Enable JIT**. Henge's helper attaches and a Mac can start.", done: attached)
+                point(2, "**JIT'i Etkinleştir** düğmesine dokunun. Yardımcı bağlanır ve gerçek kod çalıştırma testi yapılır.", done: attached)
             }
             .padding(16).hengeCard()
 
             if jit.busy {
                 HStack(spacing: 11) {
                     ProgressView().tint(Theme.accent)
-                    Text(jit.status ?? "Working…").font(.system(size: 14)).foregroundStyle(Theme.text)
+                    Text(jit.status ?? "İşlem yapılıyor…").font(.system(size: 14)).foregroundStyle(Theme.text)
                     Spacer(minLength: 0)
                 }
                 .padding(16).hengeCard(high: true)
             } else if attached {
-                outcome("JIT is on. a Mac can start.", ok: true)
+                outcome("JIT Açık (Kod çalıştırma testi doğrulandı). Sanal Mac başlatılabilir.", ok: true)
             } else if let error = jit.error {
                 VStack(alignment: .leading, spacing: 10) {
+                    if let problem = jit.connectionProblem {
+                        Text(problem.categoryTitle)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.red)
+                    }
                     outcome(error, ok: false)
                     if jit.connectionProblem == .pairing {
-                        Button(OnDevicePairing.isSupported ? "Pair again" : "Import a new pairing file") {
+                        Button(OnDevicePairing.isSupported ? "Yeniden Eşleştir" : "Yeni Eşleştirme Dosyası İçe Aktar") {
                             path = [OnDevicePairing.isSupported ? .pairOnDevice : .importFile]
                         }
                         .font(.system(size: 14, weight: .semibold))
                     }
-                    if jit.connectionProblem != nil {
+                    if jit.connectionProblem == .vpn || jit.connectionProblem == .pairing {
                         Button(LocalDevVPN.actionTitle) { LocalDevVPN.open() }
                             .font(.system(size: 14, weight: .semibold))
                     }
@@ -315,20 +360,20 @@ struct JITSetupFlow: View {
             }
 
             if !attached {
-                Button("Reset Developer Disk Image", role: .destructive) { jit.resetDDI() }
+                Button("Geliştirici Disk Görüntüsünü (DDI) Sıfırla", role: .destructive) { jit.resetDDI() }
                     .font(.system(size: 13, weight: .medium))
                     .disabled(jit.busy)
                     .padding(.top, 4)
             }
         } actions: {
             if attached {
-                Button("Done") { close() }.buttonStyle(PrimaryButtonStyle())
+                Button("Tamam") { close() }.buttonStyle(PrimaryButtonStyle())
             } else if jit.prepared {
-                Button { jit.enableBuiltIn() } label: { Label("Enable JIT", systemImage: "bolt.fill") }
+                Button { jit.enableBuiltIn() } label: { Label("JIT'i Etkinleştir", systemImage: "bolt.fill") }
                     .buttonStyle(PrimaryButtonStyle(enabled: !jit.busy))
                     .disabled(jit.busy)
             } else {
-                Button("Check setup") { jit.prepareBuiltIn() }
+                Button("Kurulumu Kontrol Et") { jit.prepareBuiltIn() }
                     .buttonStyle(PrimaryButtonStyle(enabled: !jit.busy))
                     .disabled(jit.busy)
             }
@@ -338,19 +383,18 @@ struct JITSetupFlow: View {
     // MARK: StikDebug
 
     private var stikDebug: some View {
-        page(symbol: "ant", title: "Use StikDebug",
-             subtitle: "StikDebug is a separate app that attaches to Henge. Henge sends it the JIT script "
-                     + "itself, so nothing needs configuring for Henge inside StikDebug.") {
+        page(symbol: "ant", title: "StikDebug Kullan",
+             subtitle: "StikDebug, Henge'e dışarıdan bağlanan ayrı bir uygulamadır. Henge gerekli JIT betiğini otomatik gönderir.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Install [StikDebug](https://github.com/StikDebug/StikDebug/releases/latest).",
+                point(1, "[StikDebug](https://github.com/StikDebug/StikDebug/releases/latest) uygulamasını yükleyin.",
                       done: JITBootstrap.isStikDebugInstalled)
-                point(2, "Import this \(device)'s pairing file into StikDebug.")
-                point(3, "Install and connect [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)).")
-                point(4, "Whenever you start a Mac, Henge opens StikDebug, which attaches and comes back.")
+                point(2, "Bu \(device) cihazının eşleştirme dosyasını StikDebug içine aktarın.")
+                point(3, "[LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)) uygulamasını yükleyip bağlayın.")
+                point(4, "Bir Mac başlattığınızda Henge StikDebug'ı açar, JIT bölgesini alır ve geri döner.")
             }
             .padding(16).hengeCard()
         } actions: {
-            Button("Use StikDebug") {
+            Button("StikDebug Kullan") {
                 jit.method = .stikDebug
                 HengeLog.log("ui", "JIT method set to StikDebug")
                 close()
@@ -362,25 +406,22 @@ struct JITSetupFlow: View {
     // MARK: TrollStore
 
     private var trollStore: some View {
-        page(symbol: "sparkles", title: "Use TrollStore",
-             subtitle: "TrollStore can enable JIT for apps it installed, with no pairing file, "
-                     + "VPN or computer.") {
+        page(symbol: "sparkles", title: "TrollStore Kullan",
+             subtitle: "TrollStore (iOS 14.0–17.0), kurduğu uygulamalara VPN veya eşleştirme dosyası gerekmeden JIT verebilir.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Install Henge.ipa through TrollStore, on an iOS version TrollStore supports. It carries the "
-                       + "entitlements TrollStore keeps, so the same file works there and in a sideloader.",
+                point(1, "Henge.ipa dosyasını TrollStore üzerinden yükleyin.",
                       done: JITBootstrap.isInstalledWithTrollStore)
-                point(2, "In TrollStore's Settings, turn on URL Scheme. TrollStore ignores enable-jit requests without it.")
-                point(3, "Whenever a Mac starts, Henge asks TrollStore to enable JIT. TrollStore opens Henge, "
-                       + "attaches to it for a moment and lets go, which leaves it allowed to run code it wrote.")
+                point(2, "TrollStore Ayarları'nda 'URL Scheme' seçeneğini açın.")
+                point(3, "Bir Mac başlatıldığında Henge otomatik olarak TrollStore'dan JIT ister.")
             }
             .padding(16).hengeCard()
             if !JITBootstrap.isTrollStoreInstalled {
-                Label("TrollStore was not found on this \(device). It installs on iOS 14.0 to 17.0.", systemImage: "info.circle")
+                Label("Bu \(device) üzerinde TrollStore bulunamadı (yalnızca iOS 14.0–17.0 sürümlerini destekler).", systemImage: "info.circle")
                     .font(.system(size: 13)).foregroundStyle(Theme.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } actions: {
-            Button("Use TrollStore") {
+            Button("TrollStore Kullan") {
                 jit.method = .trollStore
                 HengeLog.log("ui", "JIT method set to TrollStore")
                 close()
@@ -392,25 +433,24 @@ struct JITSetupFlow: View {
     // MARK: Jailbreak
 
     private var jailbreak: some View {
-        page(symbol: "lock.open", title: "Use a jailbreak",
-             subtitle: "On a device jailbroken with Dopamine, JIT is a setting: the jailbreak marks every app as "
-                     + "debugged when it opens, and a debugged app may run code it wrote. Henge needs nothing else.") {
+        page(symbol: "lock.open", title: "Jailbreak Kullan",
+             subtitle: "Dopamine ile jailbreak yapılmış cihazlarda 'Allow JIT in Apps' ayarı açıldığında Henge doğrudan JIT ile başlar.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Open Dopamine and go to its Settings.", done: JITBootstrap.isJailbroken)
-                point(2, "Turn on Allow JIT in Apps.")
-                point(3, "Close Henge completely and open it again. The setting applies to apps as they start.",
+                point(1, "Dopamine uygulamasını açıp Ayarlar'a girin.", done: JITBootstrap.isJailbroken)
+                point(2, "'Allow JIT in Apps' seçeneğini etkinleştirin.")
+                point(3, "Henge'i tamamen kapatıp yeniden açın.",
                       done: JITBootstrap.debuggedAtLaunch)
             }
             .padding(16).hengeCard()
             if JITBootstrap.debuggedAtLaunch {
-                Label("Henge was marked as debugged when it opened, so JIT is on.", systemImage: "checkmark.circle.fill")
+                Label("Henge açıldığında hata ayıklama izni aktifti.", systemImage: "checkmark.circle.fill")
                     .font(.system(size: 13)).foregroundStyle(.green)
             } else if !JITBootstrap.isJailbroken {
-                Label("No jailbreak was found on this \(device).", systemImage: "info.circle")
+                Label("Bu \(device) üzerinde Jailbreak bulunamadı.", systemImage: "info.circle")
                     .font(.system(size: 13)).foregroundStyle(Theme.textDim)
             }
         } actions: {
-            Button("Use the jailbreak") {
+            Button("Jailbreak Kullan") {
                 jit.method = .jailbreak
                 HengeLog.log("ui", "JIT method set to jailbreak")
                 close()
@@ -450,7 +490,7 @@ struct JITSetupFlow: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Close") { close() }
+                Button("Kapat") { close() }
             }
         }
     }

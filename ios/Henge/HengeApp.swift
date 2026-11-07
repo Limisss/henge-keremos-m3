@@ -11,7 +11,7 @@ struct HengeApp: App {
         HengeLog.start()
         HengeLog.logFootprint("app-launch")
         JITBootstrap.noteLaunchState()
-        HengeLog.log("app", "increased memory limit: \(Entitlements.increasedMemory ? "yes" : "no"); extended addressing: \(Entitlements.extendedAddressing ? "yes" : "no"); limit \(Entitlements.memoryLimitAtLaunch >> 20) MB")
+        HengeLog.log("app", "get-task-allow: \(Entitlements.getTaskAllow ? "yes" : "no"); increased memory limit: \(Entitlements.increasedMemory ? "yes" : "no"); extended addressing: \(Entitlements.extendedAddressing ? "yes" : "no"); limit \(Entitlements.memoryLimitAtLaunch >> 20) MB")
         // Without the guard, a brk no debugger answers kills the app instead of failing.
         JITBootstrap.installTrapGuard()
         try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
@@ -44,13 +44,13 @@ struct RootView: View {
         ZStack {
             TabView(selection: $tab) {
                 HomeView(running: $running, tab: $tab)
-                    .tabItem { Label("Macs", systemImage: "macwindow") }
+                    .tabItem { Label("Mac'ler", systemImage: "macwindow") }
                     .tag(Tab.macs)
                 InstallView()
-                    .tabItem { Label("Install", systemImage: "arrow.down.circle") }
+                    .tabItem { Label("macOS Kur", systemImage: "arrow.down.circle") }
                     .tag(Tab.install)
                 SettingsView()
-                    .tabItem { Label("Settings", systemImage: "gearshape") }
+                    .tabItem { Label("Ayarlar", systemImage: "gearshape") }
                     .tag(Tab.settings)
             }
             .tint(Desk.accentLight)

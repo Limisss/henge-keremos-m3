@@ -31,21 +31,21 @@ struct InstallView: View {
                 .deskColumn()
             }
             .background(Desk.page)
-            .navigationTitle(installer.busy ? "Installing" : "Install macOS")
+            .navigationTitle(installer.busy ? "macOS Kuruluyor" : "macOS Kur")
         }
     }
 
     // MARK: Choosing
 
     @ViewBuilder private var chooser: some View {
-        DeskHeading("Version")
+        DeskHeading("macOS Sürümü")
         VStack(spacing: 0) {
             ForEach(MacOSRelease.all) { r in
                 Button { release = r } label: { versionRow(r) }
                     .buttonStyle(.plain)
                     .contextMenu {
                         if Installer.haveImage(r) {
-                            Button("Delete Download", role: .destructive) { confirmDeleteDownload = r }
+                            Button("İndirilen Dosyayı Sil", role: .destructive) { confirmDeleteDownload = r }
                         }
                     }
                 if r.id != MacOSRelease.all.last?.id { Rectangle().fill(Desk.hairline).frame(height: 0.5) }
@@ -53,48 +53,55 @@ struct InstallView: View {
         }
         .deskCard()
         .id(refresh)
-        .confirmationDialog("Delete this download?", isPresented: Binding(get: { confirmDeleteDownload != nil }, set: { if !$0 { confirmDeleteDownload = nil } }),
+        .confirmationDialog("Bu indirilen IPSW silinsin mi?", isPresented: Binding(get: { confirmDeleteDownload != nil }, set: { if !$0 { confirmDeleteDownload = nil } }),
                             titleVisibility: .visible) {
-            Button("Delete Download", role: .destructive) {
+            Button("İndirilen Dosyayı Sil", role: .destructive) {
                 if let r = confirmDeleteDownload { Installer.deleteImage(r) }
                 refresh += 1
             }
         }
 
-        DeskHeading("New Mac")
+        DeskHeading("Yeni Sanal Mac")
         VStack(spacing: 0) {
-            TextField("Name", text: $name)
+            TextField("Mac Adı", text: $name)
                 .font(.system(size: 16))
                 .padding(.horizontal, 17)
                 .padding(.vertical, 14)
             Rectangle().fill(Desk.hairline).frame(height: 0.5)
-            HStack {
-                Text("Memory").font(.system(size: 16))
-                Spacer()
-                Picker("Memory", selection: $ramGB) {
-                    ForEach([4, 6, 8], id: \.self) { Text("\($0) GB").tag($0) }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Bellek (RAM)").font(.system(size: 16))
+                    Spacer()
+                    Picker("Bellek", selection: $ramGB) {
+                        ForEach(Device.ramOptionsGB, id: \.self) { Text("\($0) GB").tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 220)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 190)
+                let adv = Device.ramAdvisory(forGB: ramGB)
+                Text(adv.message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(adv.level == .recommended ? Desk.good : adv.level == .caution ? .orange : Desk.bad)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 17)
             .padding(.vertical, 10)
             Rectangle().fill(Desk.hairline).frame(height: 0.5)
-            Toggle("Delete the download after", isOn: $deleteAfter)
+            Toggle("Kurulum bittikten sonra IPSW dosyasını sil", isOn: $deleteAfter)
                 .font(.system(size: 16))
                 .padding(.horizontal, 17)
                 .padding(.vertical, 10)
         }
         .deskCard()
 
-        Button(Installer.haveImage(release) ? "Install" : "Download and Install") {
+        Button(Installer.haveImage(release) ? "Kurulumu Başlat (İndirilen IPSW ile)" : "İndir ve Kur") {
             installer.start(release, name: name.isEmpty ? "Mac" : name, ramMB: ramGB * 1024, cpus: cpus, keepImage: !deleteAfter)
         }
         .buttonStyle(DeskButtonStyle(enabled: JITBootstrap.ready && !Device.chipTooOld))
         .disabled(!JITBootstrap.ready || Device.chipTooOld)
         .padding(.top, 20)
-        Text(Device.chipTooOld ? Device.chipTooOldText : JITBootstrap.ready ? "Keep Henge open and the \(Device.name) plugged in. Needs about \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) free."
-                                : "Turn on JIT first.")
+        Text(Device.chipTooOld ? Device.chipTooOldText : JITBootstrap.ready ? "Henge'i açık tutun ve \(Device.name) cihazınızı şarja takın. Yaklaşık \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) boş alan gerekir."
+                                : "Kuruluma başlamadan önce JIT'i etkinleştirip doğrulayın.")
             .font(.system(size: 13))
             .foregroundStyle(Desk.dim)
             .multilineTextAlignment(.center)
@@ -106,9 +113,9 @@ struct InstallView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(r.name).font(.system(size: 16, weight: .medium)).foregroundStyle(Desk.text)
                 if let size = Installer.imageSize(r) {
-                    Text("Downloaded, \(ByteText.string(UInt64(size)))").font(.system(size: 13)).foregroundStyle(Desk.good)
+                    Text("İndirildi (Hazır), \(ByteText.string(UInt64(size)))").font(.system(size: 13)).foregroundStyle(Desk.good)
                 } else {
-                    Text("\(ByteText.string(UInt64(r.bytes))) download").font(.system(size: 13)).foregroundStyle(Desk.dim)
+                    Text("\(ByteText.string(UInt64(r.bytes))) indirme").font(.system(size: 13)).foregroundStyle(Desk.dim)
                 }
                 Text(r.note).font(.system(size: 13)).foregroundStyle(Desk.dim)
             }
@@ -122,7 +129,7 @@ struct InstallView: View {
 
     // MARK: Going
 
-    private static let stages = ["Download", "Start installer", "Write macOS", "Check macOS", "Finish"]
+    private static let stages = ["İndir", "Kurulumu Başlat", "macOS Yaz", "Doğrula", "Tamamla"]
 
     private var stage: Int {
         switch installer.phase {
@@ -150,11 +157,11 @@ struct InstallView: View {
         let elapsed = Date().timeIntervalSince(stageStarted)
         guard stageSeen == stage, fraction > 0.03, fraction < 1, elapsed > 10 else { return nil }
         let minutes = Int((elapsed / fraction * (1 - fraction) / 60).rounded(.up))
-        return minutes <= 1 ? "About a minute left in this step" : "About \(minutes) minutes left in this step"
+        return minutes <= 1 ? "Bu adımda yaklaşık 1 dakika kaldı" : "Bu adımda yaklaşık \(minutes) dakika kaldı"
     }
 
     @ViewBuilder private var progress: some View {
-        Text("\(release.name) on this \(Device.name). Keep Henge open.")
+        Text("Bu \(Device.name) üzerine \(release.name) kuruluyor. Henge'i açık tutun.")
             .font(.system(size: 16))
             .foregroundStyle(Desk.dim)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -163,10 +170,10 @@ struct InstallView: View {
 
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             VStack(alignment: .leading, spacing: 0) {
-                Text("\(Int(fraction * 100))%")
+                Text("%\(Int(fraction * 100))")
                     .font(.system(size: 66, weight: .bold))
                     .monospacedDigit()
-                Text(timeLeft ?? "Step \(stage + 1) of \(Self.stages.count)")
+                Text(timeLeft ?? "Adım \(stage + 1) / \(Self.stages.count)")
                     .font(.system(size: 15))
                     .foregroundStyle(Desk.dim)
                     .padding(.top, 2)
@@ -187,7 +194,7 @@ struct InstallView: View {
             stageStarted = Date()
         }
 
-        DeskHeading("Steps")
+        DeskHeading("Adımlar")
         VStack(spacing: 0) {
             ForEach(Array(Self.stages.enumerated()), id: \.offset) { i, title in
                 HStack {
@@ -208,7 +215,7 @@ struct InstallView: View {
         }
         .deskCard()
 
-        Button(details ? "Hide details" : "Show details") { withAnimation { details.toggle() } }
+        Button(details ? "Detayları Gizle" : "Detayları Göster") { withAnimation { details.toggle() } }
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(Desk.accentLight)
             .padding(.top, 14)
@@ -230,7 +237,7 @@ struct InstallView: View {
     private func finished(_ text: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: "checkmark.circle.fill").font(.system(size: 54)).foregroundStyle(Desk.good).padding(.top, 8)
-            Text("Installed").font(.system(size: 24, weight: .bold))
+            Text("Kurulum Tamamlandı").font(.system(size: 24, weight: .bold))
             Text(text).font(.system(size: 15)).foregroundStyle(Desk.dim).multilineTextAlignment(.center)
         }
         .padding(20)
@@ -241,16 +248,31 @@ struct InstallView: View {
 
     @ViewBuilder private func failed(_ text: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("It did not work").font(.system(size: 22, weight: .bold))
+            Text("Kurulum Tamamlanamadı").font(.system(size: 22, weight: .bold))
             Text(text).font(.system(size: 15))
-            Text("Quit Henge (swipe it away) and open it again before trying again: only one Mac can start per launch.")
-                .font(.system(size: 13)).foregroundStyle(Desk.dim)
-            Button("Back") { installer.reset() }.buttonStyle(DeskButtonStyle()).padding(.top, 6)
+            Text("İndirilen macOS kurulum dosyası (IPSW) cihazda korundu; yeniden indirme yapılmaz.")
+                .font(.system(size: 13, weight: .medium)).foregroundStyle(Desk.good)
+            if installer.canRetryInProcessWith3GB {
+                Text("Başarısız bellek ayırma kaynakları temizlendi. Uygulamayı kapatmadan doğrudan 3 GB RAM ile tekrar deneyebilirsiniz:")
+                    .font(.system(size: 13)).foregroundStyle(Desk.dim)
+                Button("3 GB RAM ile Hemen Tekrar Dene (İndirmeden)") {
+                    ramGB = 3
+                    installer.retryWith3GB()
+                }
+                .buttonStyle(DeskButtonStyle())
+                .padding(.top, 4)
+            } else if installer.requiresAppRestartBeforeRetry {
+                Text("Bu oturumda sanal makine motoru başlatılıp durduğu için tekrar denemeden önce Henge'i tamamen kapatıp (yukarı kaydırarak) yeniden açın.")
+                    .font(.system(size: 13)).foregroundStyle(.orange)
+            }
+            Button("Kurulum Seçeneklerine Dön") { installer.reset() }
+                .buttonStyle(DeskButtonStyle(enabled: true))
+                .padding(.top, 4)
         }
         .padding(18)
         .deskCard(radius: 30)
         .padding(.top, 8)
-        DeskHeading("Log")
+        DeskHeading("Günlük (Log)")
         LogTail().padding(14).frame(maxWidth: .infinity, alignment: .leading).deskCard()
     }
 }

@@ -1,0 +1,42 @@
+name: Build Henge IPA (iPad Air M3 / KeremOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "feat/**"
+
+jobs:
+  build-ipa:
+    name: Build Sign-Ready Henge.ipa on macOS Xcode
+    runs-on: macos-15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen & CMake
+        run: |
+          brew install xcodegen cmake
+
+      - name: Fetch / Prepare iOS Dependencies
+        run: |
+          chmod +x ios/scripts/fetch_deps.sh ios/scripts/package_ipa.sh tools/build_ios_restore.sh
+          ./ios/scripts/fetch_deps.sh
+
+      - name: Run Source & Display Verification
+        run: |
+          chmod +x ios/scripts/check_display.sh
+          ./ios/scripts/check_display.sh
+
+      - name: Package Sign-Ready Henge.ipa
+        run: |
+          ./ios/scripts/package_ipa.sh
+          ls -lh ~/Desktop/Henge.ipa
+
+      - name: Upload Sign-Ready Henge.ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Henge-KeremOS-M3-ipa
+          path: ~/Desktop/Henge.ipa
+          retention-days: 30

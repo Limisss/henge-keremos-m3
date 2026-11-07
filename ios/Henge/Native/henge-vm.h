@@ -68,5 +68,7 @@ int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *
 uint64_t henge_largest_mapping_mb(void);
 /* Bytes this process may still allocate before jetsam (os_proc_available_memory). */
 size_t henge_available_memory(void);
+/* Current physical memory footprint charged to this process, in bytes (task_vm_info.phys_footprint). */
+size_t henge_phys_footprint(void);
 
 #endif

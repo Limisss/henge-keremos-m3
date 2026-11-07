@@ -49,6 +49,9 @@ private struct MachineFile: Codable {
     var ecid: UInt64
     var seed: UInt64?
     var ramMB: Int?
+    var osName: String?
+    var screenWidth: Int?
+    var screenHeight: Int?
 }
 
 @MainActor
@@ -81,15 +84,48 @@ final class Machines: ObservableObject {
         removeLeftovers()
     }
 
-    /// Machine folders nothing refers to (an install cut short by a crash or by quitting): their disks take real space.
+    /// Recovers valid installed Macs whose entry in machines.json was lost (e.g. across an update or crash),
+    /// and removes only genuinely unfinished install directories (where the `restore` scratch folder still exists
+    /// or required files are missing).
     private func removeLeftovers() {
+        let fm = FileManager.default
         let known = Set(all.map(\.id))
-        let items = (try? FileManager.default.contentsOfDirectory(at: Self.root, includingPropertiesForKeys: nil)) ?? []
+        let items = (try? fm.contentsOfDirectory(at: Self.root, includingPropertiesForKeys: nil)) ?? []
+        var recoveredAny = false
         for item in items {
             guard let id = UUID(uuidString: item.lastPathComponent), !known.contains(id) else { continue }
-            HengeLog.log("machines", "removing the unfinished machine \(id)")
-            try? FileManager.default.removeItem(at: item)
+            let restoreScratch = item.appendingPathComponent("restore")
+            let hasAllRequired = Self.required.allSatisfy { fm.fileExists(atPath: item.appendingPathComponent($0).path) }
+            let diskPath = item.appendingPathComponent("disk.img").path
+            if !fm.fileExists(atPath: restoreScratch.path),
+               hasAllRequired,
+               fm.fileExists(atPath: diskPath),
+               let data = try? Data(contentsOf: item.appendingPathComponent("machine.json")),
+               let info = try? JSONDecoder().decode(MachineFile.self, from: data) {
+                let diskBytes = (try? fm.attributesOfItem(atPath: diskPath)[.size] as? Int64) ?? (64 << 30)
+                var mac = VirtualMac(
+                    id: id,
+                    name: info.name ?? "Kurtarılan Mac",
+                    ecid: info.ecid,
+                    seed: info.seed ?? 0,
+                    ramMB: info.ramMB ?? (Device.suggestedRAMGB * 1024),
+                    diskBytes: diskBytes,
+                    osName: info.osName,
+                    screenWidth: info.screenWidth,
+                    screenHeight: info.screenHeight
+                )
+                if mac.screenWidth == nil || mac.screenHeight == nil {
+                    (mac.screenWidth, mac.screenHeight) = Device.fittingScreen
+                }
+                all.append(mac)
+                recoveredAny = true
+                HengeLog.log("machines", "recovered orphaned valid machine \(mac.name) (\(id))")
+            } else {
+                HengeLog.log("machines", "removing unfinished machine directory \(id)")
+                try? fm.removeItem(at: item)
+            }
         }
+        if recoveredAny { save() }
     }
 
     nonisolated static var root: URL {
@@ -127,9 +163,22 @@ final class Machines: ObservableObject {
             let data = try Data(contentsOf: folder.appendingPathComponent("machine.json"))
             let info = try JSONDecoder().decode(MachineFile.self, from: data)
             let missing = Self.required.filter { !FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
-            guard missing.isEmpty, Self.hasDisk(folder) else { throw message("The folder is missing \((missing + (Self.hasDisk(folder) ? [] : ["disk.img"])).joined(separator: ", ")).") }
-            var mac = VirtualMac(name: info.name ?? folder.lastPathComponent, ecid: info.ecid, seed: info.seed ?? 0,
-                                 ramMB: info.ramMB ?? 2048, diskBytes: 0)
+            guard missing.isEmpty, Self.hasDisk(folder) else {
+                throw message("Klasörde şu gerekli dosyalar eksik: \((missing + (Self.hasDisk(folder) ? [] : ["disk.img"])).joined(separator: ", ")).")
+            }
+            var mac = VirtualMac(
+                name: info.name ?? folder.lastPathComponent,
+                ecid: info.ecid,
+                seed: info.seed ?? 0,
+                ramMB: info.ramMB ?? (Device.suggestedRAMGB * 1024),
+                diskBytes: 0,
+                osName: info.osName,
+                screenWidth: info.screenWidth,
+                screenHeight: info.screenHeight
+            )
+            if mac.screenWidth == nil || mac.screenHeight == nil {
+                (mac.screenWidth, mac.screenHeight) = Device.fittingScreen
+            }
             importing = mac.name
             unpacked = 0
             let dest = mac.directory
@@ -152,11 +201,28 @@ final class Machines: ObservableObject {
                         Task { @MainActor in Machines.shared.unpacked = fraction }
                     }, nil) == 0
                 }.value
-                guard ok else { try? fm.removeItem(at: dest); throw message("The packed disk could not be unpacked (not enough space?).") }
+                guard ok else {
+                    try? fm.removeItem(at: dest)
+                    throw message("Sıkıştırılmış disk görüntüsü açılamadı (yeterli boş depolama alanı olmayabilir).")
+                }
                 if move { try? fm.removeItem(at: packed) }
+            }
+            let exportedShared = folder.appendingPathComponent("Shared", isDirectory: true)
+            if fm.fileExists(atPath: exportedShared.path) {
+                let targetShared = Self.inbox.appendingPathComponent("Shared", isDirectory: true)
+                try? fm.createDirectory(at: targetShared, withIntermediateDirectories: true)
+                if let sharedItems = try? fm.contentsOfDirectory(at: exportedShared, includingPropertiesForKeys: nil) {
+                    for item in sharedItems {
+                        let dst = targetShared.appendingPathComponent(item.lastPathComponent)
+                        if !fm.fileExists(atPath: dst.path) {
+                            try? fm.copyItem(at: item, to: dst)
+                        }
+                    }
+                }
             }
             if move { try? fm.removeItem(at: folder) }
             mac.diskBytes = (try? fm.attributesOfItem(atPath: mac.disk.path)[.size] as? Int64) ?? 0
+            syncMachineMetadataFile(mac)
             all.append(mac)
             save()
             HengeLog.log("machines", "imported \(mac.name) (ECID \(mac.ecid), \(mac.diskBytes >> 30) GB disk)")
@@ -202,14 +268,17 @@ final class Machines: ObservableObject {
         let free = (try? Self.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage ?? 0
         let needed = Int64(used) + (256 << 20)
         if free > 0 && free < needed {
-            throw message("Exporting \(mac.name) needs about \(ByteText.string(UInt64(needed))) free; this \(Device.name) has \(ByteText.string(UInt64(free))). Deleting a downloaded macOS installer (Install macOS, swipe it) frees about 16 GB.")
+            throw message("'\(mac.name)' dışa aktarımı için yaklaşık \(ByteText.string(UInt64(needed))) boş alan gerekiyor; bu \(Device.name)'da \(ByteText.string(UInt64(free))) boş alan var. İndirilen macOS kurulum dosyasını silmek yaklaşık 16 GB alan açar.")
         }
         try fm.createDirectory(at: partial, withIntermediateDirectories: true)
         do {
             try fm.copyItem(at: mac.rom, to: partial.appendingPathComponent("AVPBooter.vmapple2.bin"))
             try fm.copyItem(at: mac.aux, to: partial.appendingPathComponent("auxiliary.bin"))
-            let info: [String: Any] = ["name": mac.name, "ecid": mac.ecid, "seed": mac.seed, "ramMB": mac.ramMB]
-            try JSONSerialization.data(withJSONObject: info).write(to: partial.appendingPathComponent("machine.json"))
+            var info: [String: Any] = ["name": mac.name, "ecid": mac.ecid, "seed": mac.seed, "ramMB": mac.ramMB]
+            if let osName = mac.osName { info["osName"] = osName }
+            if let sw = mac.screenWidth { info["screenWidth"] = sw }
+            if let sh = mac.screenHeight { info["screenHeight"] = sh }
+            try JSONSerialization.data(withJSONObject: info).write(to: partial.appendingPathComponent("machine.json"), options: .atomic)
             let source = mac.disk.path, target = partial.appendingPathComponent(Self.packedDisk).path
             let ok = await Task.detached { () -> Bool in
                 hv_sparse_pack_progress(source, target, { done, total, _ in
@@ -217,7 +286,7 @@ final class Machines: ObservableObject {
                     Task { @MainActor in Machines.shared.exported = fraction }
                 }, nil) == 0
             }.value
-            guard ok else { throw message("The disk could not be written (not enough space?).") }
+            guard ok else { throw message("Sanal disk dışa aktarılamadı (yeterli boş depolama alanı olmayabilir).") }
             try fm.moveItem(at: partial, to: final)
         } catch {
             try? fm.removeItem(at: partial)
@@ -227,16 +296,28 @@ final class Machines: ObservableObject {
         return final
     }
 
+    private func syncMachineMetadataFile(_ mac: VirtualMac) {
+        var info: [String: Any] = ["name": mac.name, "ecid": mac.ecid, "seed": mac.seed, "ramMB": mac.ramMB]
+        if let osName = mac.osName { info["osName"] = osName }
+        if let sw = mac.screenWidth { info["screenWidth"] = sw }
+        if let sh = mac.screenHeight { info["screenHeight"] = sh }
+        if let data = try? JSONSerialization.data(withJSONObject: info) {
+            try? data.write(to: mac.directory.appendingPathComponent("machine.json"), options: .atomic)
+        }
+    }
+
     /// A machine made here (the installer), already in its directory.
     func add(_ mac: VirtualMac) {
         all.removeAll { $0.id == mac.id }
         all.append(mac)
+        syncMachineMetadataFile(mac)
         save()
     }
 
     func update(_ mac: VirtualMac) {
         guard let i = all.firstIndex(where: { $0.id == mac.id }) else { return }
         all[i] = mac
+        syncMachineMetadataFile(mac)
         save()
     }
 

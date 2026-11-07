@@ -16,10 +16,65 @@ enum Device {
         return (1920, min(max(Int((1920 / shape / 8).rounded()) * 8, 1080), 1440))
     }
 
-    /// How much memory to suggest for a new Mac: what leaves this device room for iOS.
+    /// Physical RAM reported by the kernel, in MB.
+    static let physicalMemoryMB = Int(ProcessInfo.processInfo.physicalMemory >> 20)
+    /// Process memory limit at launch (before JIT allocation), in MB.
+    static var processMemoryLimitMB: Int { Int(Entitlements.memoryLimitAtLaunch >> 20) }
+    /// Remaining memory headroom before iOS jetsam right now, in MB.
+    static var currentAvailableMemoryMB: Int { Int(henge_available_memory() >> 20) }
+    /// Current physical footprint charged to Henge right now, in MB.
+    static var currentFootprintMB: Int { Int(henge_phys_footprint() >> 20) }
+    /// Largest single contiguous virtual address mapping possible right now, in MB.
+    static var largestContiguousMappingMB: Int { Int(henge_largest_mapping_mb()) }
+
+    /// Supported RAM options in GB, including 3 GB for 8 GB devices signed without extended entitlements.
+    static let ramOptionsGB: [Int] = [3, 4, 6, 8]
+
+    /// Safe default RAM suggestion (in GB) taking both physical RAM and active signing entitlements into account.
+    /// On an 8 GB iPad (e.g. M3 Air) signed via personal Apple ID (Sideloadly: ~5117 MB jetsam limit, no
+    /// increased-memory-limit or extended-virtual-addressing), 1 GB RX JIT + 1 GB RW JIT alias + ~1 GB
+    /// HvMachine tables leave < 4 GB contiguous VA/budget, so 3 GB is the highest verified stable default.
     static var suggestedRAMGB: Int {
-        let mb = ProcessInfo.processInfo.physicalMemory >> 20
-        return mb >= 10_000 ? 8 : mb >= 7_000 ? 6 : 4
+        let limitMB = processMemoryLimitMB
+        if !Entitlements.increasedMemory || !Entitlements.extendedAddressing || limitMB < 5800 {
+            return 3
+        }
+        return physicalMemoryMB >= 7_000 && limitMB >= 6500 ? 4 : 3
+    }
+
+    enum RAMRiskLevel {
+        case recommended
+        case caution
+        case unsupported
+    }
+
+    /// Evaluates a guest RAM selection (in GB) against the four distinct memory dimensions:
+    /// 1) Physical RAM, 2) Process jetsam limit, 3) Contiguous virtual address space, 4) Guest RAM + JIT/table overhead.
+    static func ramAdvisory(forGB gb: Int) -> (level: RAMRiskLevel, message: String) {
+        let limitMB = processMemoryLimitMB
+        let physMB = physicalMemoryMB
+        if gb == 3 {
+            return (
+                .recommended,
+                "Önerilen güvenli seçim (3 GB = 3072 MB). Fiziksel RAM: \(physMB) MB, uygulama bellek sınırı: \(limitMB) MB. 1 GB JIT bölgesi ve emülatör tabloları ayrıldıktan sonra iPadOS ve macOS için kararlı çalışma payı bırakır."
+            )
+        }
+        if gb == 4 {
+            if !Entitlements.increasedMemory || !Entitlements.extendedAddressing || limitMB < 5800 {
+                return (
+                    .caution,
+                    "Uyarı (4 GB = 4096 MB): Mevcut imzada 'increased-memory-limit' / 'extended-virtual-addressing' izinleri kapalı (Uygulama sınırı: \(limitMB) MB). 1 GB JIT (RX+RW) ve ~1 GB emülatör tabloları sonrasında 4 GB kesintisiz bellek ayırma başarısız olabilir; hata alırsanız 3 GB kullanın."
+                )
+            }
+            return (
+                .recommended,
+                "4 GB (4096 MB): Yüksek bellek izni açık (\(limitMB) MB sınır). Günlük kullanım için uygun; uzun süreli yük altında bellek baskısı oluşursa 3 GB'a düşürün."
+            )
+        }
+        return (
+            .unsupported,
+            "Deneysel / Doğrulanmadı (\(gb) GB = \(gb * 1024) MB): Fiziksel RAM (\(physMB) MB) ve uygulama sınırı (\(limitMB) MB) dikkate alındığında \(gb) GB bu cihazda veya 12 GB modellerde henüz doğrulanmamıştır; başlatma hatası veya ani kapanma (jetsam) beklenir."
+        )
     }
 
     /// The virtual CPU offers Armv8.5 instructions (core/sysreg.c), and macOS uses them. They run as
@@ -31,7 +86,7 @@ enum Device {
         return major < 13
     }()
 
-    static let chipTooOldText = "macOS won't run on this \(name). Henge needs an A14 or M1 chip or newer."
+    static let chipTooOldText = "macOS bu \(name) modelinde çalışmaz. Henge için A14, M1 veya daha yeni bir işlemci gerekir."
 }
 
 /// A keyboard attached to the device. iOS reports each key going down and coming up by its HID usage,
@@ -112,11 +167,22 @@ final class HardwareMouse {
     private var reverse = false
     private var scrollsLogged = 0 // the first few, to see what a device's raw values look like
 
-    func start() {
+    func reloadSettings() {
         let defaults = UserDefaults.standard
         speed = defaults.object(forKey: Self.speedKey) == nil ? 1 : Float(defaults.double(forKey: Self.speedKey))
         reverse = defaults.bool(forKey: Self.reverseKey)
+    }
+
+    func start() {
+        reloadSettings()
         GCMouse.mice().forEach(attach)
+        observers.append(NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.reloadSettings()
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.releaseButtons()
+            HardwareKeys.releaseAll()
+        })
         observers.append(NotificationCenter.default.addObserver(forName: .GCMouseDidConnect, object: nil, queue: .main) { [weak self] note in
             if let mouse = note.object as? GCMouse { self?.attach(mouse) }
         })

@@ -376,4 +376,63 @@ enum HengeLog {
     static func logFootprint(_ tag: String) {
         henge_ios_jit_log_footprint(tag)
     }
+
+    // MARK: - Sanitized Diagnostic Report
+
+    static var sanitizedReportFileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("henge-tanilama-temiz.txt")
+    }
+
+    /// Generates a privacy-sanitized diagnostic report stripping container UUIDs, Apple Developer Team IDs,
+    /// machine ECIDs, pairing keys, and inline scripts so the user can inspect and safely share it.
+    static func sanitizedDiagnosticReport(maxLines: Int = 500) -> String {
+        let d = UIDevice.current
+        var report: [String] = [
+            "=== Henge Tanılama Raporu (Kişisel Bilgiler Temizlenmiş) ===",
+            "Cihaz Modeli          : \(deviceModel) (\(d.systemName) \(d.systemVersion))",
+            "Fiziksel RAM          : \(Device.physicalMemoryMB) MB",
+            "Uygulama Bellek Sınırı: \(Device.processMemoryLimitMB) MB",
+            "Anlık Tüketim         : \(Device.currentFootprintMB) MB (phys_footprint)",
+            "Kalan Güvenli Pay     : \(Device.currentAvailableMemoryMB) MB (available-before-jetsam)",
+            "İmza İzinleri         : \(Entitlements.signingDiagnosticSummary)",
+            "JIT Durumu            : Hazır=\(JITBootstrap.ready ? "Evet" : "Hayır"), RX Selftest(42)=\(JITBootstrap.isLive ? "Evet" : "Hayır"), CS_DEBUGGED=\(JITBootstrap.debuggedFlag ? "Açık" : "Kapalı")",
+            "Önerilen Sanal RAM    : \(Device.suggestedRAMGB) GB (\(Device.suggestedRAMGB * 1024) MB)",
+            "============================================================",
+            ""
+        ]
+        let rawLines = recentLines(maxLines)
+        for line in rawLines {
+            report.append(redactSensitiveData(in: line))
+        }
+        return report.joined(separator: "\n")
+    }
+
+    @discardableResult
+    static func writeSanitizedReportFile() -> URL {
+        let text = sanitizedDiagnosticReport()
+        let url = sanitizedReportFileURL
+        try? text.data(using: .utf8)?.write(to: url, options: .atomic)
+        return url
+    }
+
+    private static func redactSensitiveData(in line: String) -> String {
+        var s = line
+        let replacements: [(String, String)] = [
+            ("/private/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+", "<UYGULAMA_VERI_DIZINI>"),
+            ("/var/mobile/Containers/Data/Application/[0-9A-Fa-f-]+", "<UYGULAMA_VERI_DIZINI>"),
+            ("/var/containers/Bundle/Application/[0-9A-Fa-f-]+", "<UYGULAMA_PAKET_DIZINI>"),
+            ("com\\.henge\\.app(\\.jit-helper)?\\.[A-Z0-9]{8,12}", "com.henge.app$1.<TAKIM_ID>"),
+            ("ECID\\s+[0-9]+", "ECID <GIZLENDI>"),
+            ("(public_key|private_key|script-data|identifier)=[^&\\s]+", "$1=<GIZLENDI>"),
+            ("[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", "<UUID>")
+        ]
+        for (pattern, template) in replacements {
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let range = NSRange(s.startIndex..<s.endIndex, in: s)
+                s = regex.stringByReplacingMatches(in: s, range: range, withTemplate: template)
+            }
+        }
+        return s
+    }
 }

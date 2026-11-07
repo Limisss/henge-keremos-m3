@@ -223,19 +223,36 @@ uint64_t hv_vm_gpu_frames(void) {
 }
 
 int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
-    if (!c->rom || !c->disk || !c->aux) return fail(err, errlen, "The ROM, disk and auxiliary storage are all needed.");
+    if (!c->rom || !c->disk || !c->aux) return fail(err, errlen, "ROM, disk ve yardımcı depolama (aux) dosyalarının tamamı gereklidir.");
     struct sigaction ill = {.sa_flags = SA_SIGINFO | SA_ONSTACK};
     ill.sa_sigaction = on_ill;
     sigaction(SIGILL, &ill, &prior_ill);
     sigaction(SIGBUS, &ill, &prior_bus);
     sigaction(SIGSEGV, &ill, &prior_segv);
     signal(SIGPIPE, SIG_IGN); /* a guest connection closing at the far end must not end the machine */
-    if (hv_disk_open(&disk, c->disk, 0, 0) != 0) return fail(err, errlen, "Cannot open the disk image.");
-    if (hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, 0) != 0)
-        return fail(err, errlen, "Cannot open the auxiliary storage.");
+    if (hv_disk_open(&disk, c->disk, 0, 0) != 0) {
+        sigaction(SIGILL, &prior_ill, NULL);
+        sigaction(SIGBUS, &prior_bus, NULL);
+        sigaction(SIGSEGV, &prior_segv, NULL);
+        return fail(err, errlen, "Sanal disk görüntüsü (disk.img) açılamadı.");
+    }
+    if (hv_disk_open(&aux, c->aux, c->aux_offset ? c->aux_offset : 16384, 0) != 0) {
+        hv_disk_close(&disk);
+        sigaction(SIGILL, &prior_ill, NULL);
+        sigaction(SIGBUS, &prior_bus, NULL);
+        sigaction(SIGSEGV, &prior_segv, NULL);
+        return fail(err, errlen, "Yardımcı depolama (aux.img) açılamadı.");
+    }
     size_t jit = c->jit_bytes ? c->jit_bytes : (size_t)768 << 20;
     int r = c->jit_rx ? hv_machine_init_jit(&m, c->jit_rx, c->jit_rw, jit) : hv_machine_init(&m, jit);
-    if (r != 0) return fail(err, errlen, "Cannot set up the JIT region.");
+    if (r != 0) {
+        hv_disk_close(&aux);
+        hv_disk_close(&disk);
+        sigaction(SIGILL, &prior_ill, NULL);
+        sigaction(SIGBUS, &prior_bus, NULL);
+        sigaction(SIGSEGV, &prior_segv, NULL);
+        return fail(err, errlen, "JIT bölgesi veya sanal makine tabloları oluşturulamadı (bellek yetersiz).");
+    }
     m.log = c->log;
     m.gen_checks = getenv("HV_JIT_POISON") != NULL;
     if (getenv("HV_SLOW_MEM")) m.slow_mem = 1; /* debugging: every load and store through the helper */
@@ -249,9 +266,31 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
         cfg.run_installer1 = a, cfg.run_installer2 = b2;
     }
     static const uint8_t mac[6] = {0x02, 0x48, 0x56, 0x4d, 0x00, 0x01};
-    if (hv_vmapple_create(&board, &m, cpus, (c->ram_mb ? c->ram_mb : 2048) << 20, &disk, &aux, &cfg, mac) != 0)
-        return fail(err, errlen, "Cannot build the machine (not enough memory for the guest's RAM?).");
-    if (hv_vmapple_load_rom(&board, c->rom) != 0) return fail(err, errlen, "Cannot read the ROM (AVPBooter.vmapple2.bin).");
+    uint64_t ram_mb = c->ram_mb ? c->ram_mb : 2048;
+    if (hv_vmapple_create(&board, &m, cpus, ram_mb << 20, &disk, &aux, &cfg, mac) != 0) {
+        hv_vmapple_free(&board);
+        hv_machine_free(&m);
+        hv_disk_close(&aux);
+        hv_disk_close(&disk);
+        sigaction(SIGILL, &prior_ill, NULL);
+        sigaction(SIGBUS, &prior_bus, NULL);
+        sigaction(SIGSEGV, &prior_segv, NULL);
+        char msg[256];
+        snprintf(msg, sizeof msg,
+                 "Sanal makine için %llu MB (%llu GB) RAM ayrılamadı. Uygulama bellek sınırı veya kesintisiz sanal adres alanı yetersiz (3 GB ile tekrar deneyin).",
+                 (unsigned long long)ram_mb, (unsigned long long)(ram_mb / 1024));
+        return fail(err, errlen, msg);
+    }
+    if (hv_vmapple_load_rom(&board, c->rom) != 0) {
+        hv_vmapple_free(&board);
+        hv_machine_free(&m);
+        hv_disk_close(&aux);
+        hv_disk_close(&disk);
+        sigaction(SIGILL, &prior_ill, NULL);
+        sigaction(SIGBUS, &prior_bus, NULL);
+        sigaction(SIGSEGV, &prior_segv, NULL);
+        return fail(err, errlen, "Önyükleme ROM dosyası (AVPBooter.vmapple2.bin) okunamadı.");
+    }
     hv_vmapple_reset_cpu(&board);
     if (board.net && !c->no_net) {
         if (hv_net_attach(&m, board.net) != 0) fprintf(stderr, "hengevm: user-mode network unavailable\n");
@@ -267,6 +306,19 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
     atomic_store_explicit(&display_pvg, board.pvg, memory_order_release);
     os_unfair_lock_unlock(&display_lock);
     return 0;
+}
+
+void hv_vm_destroy_unstarted(void) {
+    os_unfair_lock_lock(&display_lock);
+    atomic_store_explicit(&display_pvg, NULL, memory_order_release);
+    os_unfair_lock_unlock(&display_lock);
+    hv_vmapple_free(&board);
+    hv_machine_free(&m);
+    hv_disk_close(&aux);
+    hv_disk_close(&disk);
+    sigaction(SIGILL, &prior_ill, NULL);
+    sigaction(SIGBUS, &prior_bus, NULL);
+    sigaction(SIGSEGV, &prior_segv, NULL);
 }
 
 static void *kicker_thread(void *unused) {

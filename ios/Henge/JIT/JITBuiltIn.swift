@@ -43,13 +43,16 @@ enum HengeBuiltInJIT {
 
     static var unavailableReason: String? {
 #if targetEnvironment(simulator)
-        return "Built-in JIT is available only on a physical device."
+        return "Yerleşik JIT yalnızca fiziksel cihazda kullanılabilir."
 #else
         guard #available(iOS 26.0, *) else {
-            return "Built-in JIT needs iOS 26 or later. Use StikDebug instead."
+            return "Yerleşik StikJIT için iOS 26 veya üzeri gerekir. Bunun yerine StikDebug kullanın."
         }
         if getenv("LC_HOME_PATH") != nil {
-            return "Built-in JIT is unavailable inside LiveContainer. Use StikDebug instead."
+            return "LiveContainer içinde yerleşik JIT kullanılamaz. Bunun yerine StikDebug kullanın."
+        }
+        if helperIdentifier == nil {
+            return "HengeJITHelper.appex uzantısı bu kurulumda eksik (imzalayıcı uygulama uzantılarını kaldırmış). Sideloadly ile uzantıları koruyarak yeniden yükleyin veya StikDebug kullanın."
         }
         return nil
 #endif

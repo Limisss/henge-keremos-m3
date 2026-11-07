@@ -15,6 +15,7 @@
 #include "install.h"
 
 #include <fcntl.h>
+#include <mach/mach.h>
 #include <unistd.h>
 
 HENGE_EXPORT HengeDualMapping *henge_ios_jit_get_mapping(void);
@@ -31,12 +32,12 @@ static void on_exit(int reason) {
 int henge_vm_boot(const char *rom, const char *disk, const char *aux, uint64_t ecid, uint64_t seed, uint64_t ram_mb,
                   int cpus, char *err, size_t errlen) {
     if (state) {
-        snprintf(err, errlen, "A machine has already run in this session. Quit Henge and open it again to start another.");
+        snprintf(err, errlen, "Bu oturumda daha önce bir sanal Mac çalıştırıldı. Yeni bir sanal Mac başlatmak için Henge'i tamamen kapatıp yeniden açın.");
         return -1;
     }
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
-        snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
+        snprintf(err, errlen, "JIT bellek bölgesi hazır değil. Önce JIT'i etkinleştirip doğrulayın.");
         return -1;
     }
     HvVmConfig c = {.rom = rom, .disk = disk, .aux = aux, .ecid = ecid, .seed = seed, .ram_mb = ram_mb, .ncpus = cpus, .log = 1,
@@ -67,12 +68,12 @@ static void on_install_progress(int step, double p, void *user) {
 int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_t ecid, const char *ipsw,
                      const char *workdir, uint64_t ram_mb, int cpus, char *err, size_t errlen) {
     if (state) {
-        snprintf(err, errlen, "A machine has already run in this session. Quit Henge and open it again to start another.");
+        snprintf(err, errlen, "Bu oturumda daha önce bir sanal Mac çalıştırıldı. Kuruluma başlamak için Henge'i tamamen kapatıp yeniden açın.");
         return -1;
     }
     HengeDualMapping *jit = henge_ios_jit_get_mapping();
     if (!jit || !jit->rw_addr) {
-        snprintf(err, errlen, "Henge has no JIT region. Turn on JIT first.");
+        snprintf(err, errlen, "JIT bellek bölgesi hazır değil. Önce JIT'i etkinleştirip doğrulayın.");
         return -1;
     }
     HvVmConfig c = {.rom = rom, .disk = disk, .aux = aux, .ecid = ecid, .ram_mb = ram_mb, .ncpus = cpus, .log = 1,
@@ -82,7 +83,8 @@ int henge_vm_install(const char *rom, const char *disk, const char *aux, uint64_
     install_step = 0;
     install_progress = 0;
     if (hv_install_start(hv_vm_board()->vusb, ipsw, workdir, ecid, on_install_progress, NULL) != 0) {
-        snprintf(err, errlen, "The installer could not start.");
+        hv_vm_destroy_unstarted();
+        snprintf(err, errlen, "macOS kurulum motoru başlatılamadı (IPSW dosyası veya çalışma dizini kontrol edilmeli).");
         return -1;
     }
     state = 1;
@@ -162,6 +164,14 @@ int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *
 }
 
 size_t henge_available_memory(void) { return os_proc_available_memory(); }
+
+size_t henge_phys_footprint(void) {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
+        return (size_t)info.phys_footprint;
+    return 0;
+}
 
 uint64_t henge_largest_mapping_mb(void) {
     for (uint64_t mb = 16384; mb >= 1024; mb -= 512) {

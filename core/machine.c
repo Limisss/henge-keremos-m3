@@ -70,13 +70,17 @@ static int init_rest(HvMachine *m) {
     m->slot_xa = calloc(m->max_slots, sizeof *m->slot_xa);
     m->slot_xpa = calloc(m->max_slots, sizeof *m->slot_xpa);
     m->xchained = calloc(m->max_slots, sizeof *m->xchained);
-    if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->xchained) return -1;
+    if (!m->slots || !m->slot_site || !m->slot_stub || !m->slot_cond || !m->slot_xa || !m->slot_xpa || !m->xchained) {
+        hv_machine_free(m);
+        return -1;
+    }
     pthread_mutex_init(&m->big_mu, NULL);
     pthread_cond_init(&m->big_cv, NULL);
     pthread_mutexattr_t ra;
     pthread_mutexattr_init(&ra);
     pthread_mutexattr_settype(&ra, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&m->dev_mu, &ra);
+    pthread_mutexattr_destroy(&ra);
     pthread_mutex_init(&m->tr_mu, NULL);
     pthread_mutex_init(&m->stw_mu, NULL);
     pthread_cond_init(&m->stw_cv, NULL);
@@ -85,11 +89,17 @@ static int init_rest(HvMachine *m) {
         p->ijc = calloc(HV_IJC_TABLES * HV_IJC_TABLE_BYTES / 8, 8);
         p->ucode = calloc(1u << HV_UCODE_BITS, 8);
         p->cid_chunks = calloc(65536, sizeof *p->cid_chunks);
-        if (!p->ijc || !p->ucode || !p->cid_chunks) return -1;
+        if (!p->ijc || !p->ucode || !p->cid_chunks) {
+            hv_machine_free(m);
+            return -1;
+        }
         for (int k = 0; k < HV_STASHES; k++) {
             p->stash[k].slot = calloc(HV_STASH_CAP, sizeof *p->stash[k].slot);
             p->stash[k].ent = calloc(HV_STASH_CAP, sizeof *p->stash[k].ent);
-            if (!p->stash[k].slot || !p->stash[k].ent) return -1;
+            if (!p->stash[k].slot || !p->stash[k].ent) {
+                hv_machine_free(m);
+                return -1;
+            }
         }
         pthread_mutex_init(&p->wake_mu, NULL);
         pthread_cond_init(&p->wake_cv, NULL);
@@ -251,15 +261,26 @@ void hv_machine_wake(HvMachine *m) {
 }
 
 void hv_machine_free(HvMachine *m) {
+    if (m->jit.rw) hv_jit_reset(&m->jit);
     hv_jit_region_close(&m->jit);
     for (int i = 0; i < m->nram; i++) {
         free(m->ram[i].code_pages);
         free(m->ram[i].page_gen);
+        free(m->ram[i].whint);
     }
     free(m->blocks);
     for (int i = 0; i < HV_MAX_CPUS; i++) {
-        free(m->percpu[i].ijc);
-        free(m->percpu[i].ucode);
+        HvPerCpu *p = &m->percpu[i];
+        free(p->ijc);
+        free(p->ucode);
+        if (p->cid_chunks) {
+            for (int c = 0; c < 65536; c++) free(p->cid_chunks[c]);
+            free(p->cid_chunks);
+        }
+        for (int k = 0; k < HV_STASHES; k++) {
+            free(p->stash[k].slot);
+            free(p->stash[k].ent);
+        }
     }
     free(m->slots);
     free(m->slot_site);
@@ -268,6 +289,7 @@ void hv_machine_free(HvMachine *m) {
     free(m->slot_xa);
     free(m->slot_xpa);
     free(m->xchained);
+    memset(m, 0, sizeof *m);
 }
 
 int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int readonly) {
@@ -282,10 +304,18 @@ int hv_machine_add_ram(HvMachine *m, uint64_t pa, uint64_t size, void *host, int
     while ((1ull << r->pages_log2) < pages) r->pages_log2++;
     /* A power of two, so translated code bounds-checks a page index with one shift (IC IVAU). */
     r->code_pages = calloc((size_t)1 << r->pages_log2, 1);
-    if (!m->main_ram || size > m->main_ram->size) m->main_ram = r;
     r->page_gen = calloc(pages, sizeof *r->page_gen);
     r->whint = calloc(pages * HV_MAX_CPUS, sizeof *r->whint);
-    return r->code_pages && r->page_gen && r->whint ? 0 : -1;
+    if (!r->code_pages || !r->page_gen || !r->whint) {
+        free(r->code_pages);
+        free(r->page_gen);
+        free(r->whint);
+        memset(r, 0, sizeof *r);
+        m->nram--;
+        return -1;
+    }
+    if (!m->main_ram || size > m->main_ram->size) m->main_ram = r;
+    return 0;
 }
 
 int hv_machine_add_mmio(HvMachine *m, uint64_t pa, uint64_t size, void *opaque,

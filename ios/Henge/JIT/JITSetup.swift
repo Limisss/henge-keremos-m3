@@ -16,11 +16,11 @@ enum JITMethod: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .automatic: return "Automatic"
+        case .automatic: return "Otomatik"
         case .stikDebug: return "StikDebug"
         case .trollStore: return "TrollStore"
         case .jailbreak: return "Jailbreak (Dopamine)"
-        case .builtIn: return "Built-in StikJIT"
+        case .builtIn: return "Yerleşik StikJIT"
         }
     }
 }
@@ -68,7 +68,7 @@ enum JITPairingFileStore {
               let identifier = dictionary["identifier"] as? String, !identifier.isEmpty else {
             throw NSError(domain: "HengeJIT", code: 10,
                           userInfo: [NSLocalizedDescriptionKey:
-                            "That is not a remote pairing file. Make one with the StikDebug pairing-file guide and try again."])
+                            "Seçilen dosya geçerli bir uzaktan eşleştirme (RPPairing) dosyası değil. StikDebug rehberiyle yeni bir eşleştirme dosyası oluşturup tekrar deneyin."])
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
@@ -80,35 +80,54 @@ enum JITPairingFileStore {
 final class JITCoordinator: ObservableObject {
     static let shared = JITCoordinator()
 
-    /// Why the built-in helper could not reach this device, read from its error.
+    /// Categorizes the root cause of a JIT setup/attach failure so the user immediately sees
+    /// whether the issue comes from code signing (get-task-allow), pairing file, VPN, or code execution selftest.
     enum ConnectionProblem: Equatable {
+        /// App signature lacks `get-task-allow` (e.g. signed with an enterprise/distribution cert in ESign).
+        case signature
         /// Nothing answered at LocalDevVPN's address: the VPN is off or not routing.
         case vpn
         /// The device closed the connection, usually because it no longer accepts
         /// this pairing (every new pairing replaces the last).
         case pairing
+        /// Debugger attached (`CS_DEBUGGED` set), but the 1 GB dual-mapped region or RX `henge_jit_selftest` failed.
+        case selftest
 
         init?(helperMessage: String) {
             let text = helperMessage.lowercased()
             let has = { (needles: [String]) in needles.contains(where: text.contains) }
-            if has(["connectionreset", "connection reset", "device refused connection"]) {
+            if has(["get-task-allow", "debugserver", "attach failed", "not allowed to attach", "permission denied"]) && !Entitlements.getTaskAllow {
+                self = .signature
+            } else if has(["connectionreset", "connection reset", "device refused connection", "invalid pairing", "pair", "untrusted"]) {
                 self = .pairing
             } else if has(["connectionrefused", "connection refused", "timedout", "timed out",
                            "networkunreachable", "network unreachable", "hostunreachable",
-                           "host unreachable", "no route"]) {
+                           "host unreachable", "no route", "localdevvpn"]) {
                 self = .vpn
             } else {
                 return nil
             }
         }
 
+        var categoryTitle: String {
+            switch self {
+            case .signature: return "İmza Hatası (get-task-allow Kapalı)"
+            case .vpn: return "VPN / Bağlantı Hatası (LocalDevVPN)"
+            case .pairing: return "Eşleştirme Dosyası Hatası (Pairing)"
+            case .selftest: return "Kod Çalıştırma Testi Başarısız (Selftest)"
+            }
+        }
+
         var message: String {
             switch self {
+            case .signature:
+                return "İmza Hatası: Bu kurulumda 'get-task-allow' (hata ayıklama) izni bulunmuyor. ESign veya dağıtım sertifikasıyla imzalanan paketlerde Apple bu izni kapattığı için JIT açılamaz. Sideloadly (kişisel Apple hesabı) ile imzalayın veya imzalayıcıda get-task-allow iznini açın."
             case .vpn:
-                return "Henge couldn't reach this device. Connect LocalDevVPN, then try again."
+                return "VPN Hatası: Cihazın hata ayıklama servisine ulaşılamadı. LocalDevVPN uygulamasını açıp VPN bağlantısını etkinleştirin ve tekrar deneyin."
             case .pairing:
-                return "This device closed the connection, which usually means it no longer accepts "
-                     + "Henge's pairing. Pair again, and check that LocalDevVPN is connected."
+                return "Eşleştirme Hatası: Cihaz bağlantıyı reddetti (eşleştirme dosyası geçersiz veya süresi dolmuş). Yeni bir eşleştirme dosyası içe aktarın ve LocalDevVPN'in bağlı olduğundan emin olun."
+            case .selftest:
+                return "Kod Çalıştırma Testi Başarısız: Hata ayıklayıcı bağlandı (CS_DEBUGGED açık) ancak 1 GB çift eşlemeli (RX/RW) JIT bölgesi oluşturulamadı veya gerçek kod çalıştırma testi (selftest 42) başarısız oldu."
             }
         }
     }
@@ -146,10 +165,10 @@ final class JITCoordinator: ObservableObject {
 
     var automaticDescription: String {
         switch resolvedMethod {
-        case .stikDebug: return "StikDebug is installed, so Henge will open it."
-        case .trollStore: return "TrollStore is installed, so Henge will ask it to enable JIT."
-        case .jailbreak: return "This device is jailbroken, so JIT comes from the jailbreak's Allow JIT in Apps setting."
-        default: return "StikDebug, TrollStore and a jailbreak were not found, so Henge will use its built-in helper."
+        case .stikDebug: return "StikDebug yüklü olduğu için Henge doğrudan StikDebug üzerinden JIT açacak."
+        case .trollStore: return "TrollStore yüklü olduğu için Henge JIT iznini TrollStore'dan isteyecek."
+        case .jailbreak: return "Cihazda Jailbreak algılandı; Dopamine içindeki 'Allow JIT in Apps' ayarı kullanılır."
+        default: return "StikDebug, TrollStore veya Jailbreak bulunamadı; Henge kendi yerleşik StikJIT yardımcısını kullanacak."
         }
     }
 
@@ -184,6 +203,12 @@ final class JITCoordinator: ObservableObject {
         guard !autoTried, UserDefaults.standard.bool(forKey: Self.autoEnableKey) else { return }
         autoTried = true
         guard !JITBootstrap.ready else { return }
+        if !Entitlements.getTaskAllow, !JITBootstrap.isJailbroken, !JITBootstrap.isInstalledWithTrollStore {
+            connectionProblem = .signature
+            error = ConnectionProblem.signature.message
+            log("JIT at launch skipped: get-task-allow entitlement is missing")
+            return
+        }
         guard HengeBuiltInJIT.isAvailable, hasPairing else {
             log("JIT at launch is on, but built-in StikJIT is not available or not paired; skipped")
             return
@@ -197,6 +222,13 @@ final class JITCoordinator: ObservableObject {
         guard !JITBootstrap.ready else { return }
         error = nil
         connectionProblem = nil
+        if !Entitlements.getTaskAllow, !JITBootstrap.isJailbroken, !JITBootstrap.isInstalledWithTrollStore {
+            connectionProblem = .signature
+            error = ConnectionProblem.signature.message
+            log("enable blocked: get-task-allow entitlement is missing in current signature")
+            showSetup = true
+            return
+        }
         switch resolvedMethod {
         case .automatic:
             assertionFailure("Automatic must resolve to a concrete JIT method")
@@ -209,19 +241,19 @@ final class JITCoordinator: ObservableObject {
             } else if JITBootstrap.requestTrollStoreAttach() {
                 awaitTrollStore()
             } else {
-                error = "StikDebug is not installed. Install it, or set up Built-in StikJIT."
+                error = "StikDebug uygulaması yüklü değil. StikDebug yükleyin veya Yerleşik StikJIT kurulumunu tamamlayın."
                 showSetup = true
             }
         case .trollStore:
             if JITBootstrap.requestTrollStoreAttach() {
                 awaitTrollStore()
             } else {
-                error = "TrollStore could not be opened. Install Henge through TrollStore, or choose another method."
+                error = "TrollStore açılamadı. Henge'i TrollStore üzerinden kurun veya başka bir JIT yöntemi seçin."
                 showSetup = true
             }
         case .jailbreak:
             // Nothing to ask: a jailbreak marks an app as debugged as it opens, if it has been told to. Say what to turn on.
-            error = "Turn on Allow JIT in Apps in Dopamine's settings, then open Henge again."
+            error = "Dopamine ayarlarından 'Allow JIT in Apps' seçeneğini açın ve Henge'i yeniden başlatın."
             showSetup = true
         case .builtIn:
             guard HengeBuiltInJIT.isAvailable, hasPairing else {
@@ -233,48 +265,56 @@ final class JITCoordinator: ObservableObject {
         }
     }
 
-    /// After TrollStore is asked: it opens Henge again and attaches to it for a moment, which marks the process as debugged. Watch for
-    /// that, so the Games tab and the Library notice without waiting for another trip to the foreground, and say what to check if
-    /// it never comes -- TrollStore only answers enable-jit once its URL Scheme setting is on.
+    /// Verifies that after CS_DEBUGGED is set, the 1 GB dual-mapped JIT region is claimed and passes the
+    /// native RX code execution selftest (`henge_jit_selftest` returning 42).
+    private func verifyLiveJITAfterAttach(sourceName: String) {
+        JITBootstrap.resetTrapPrewarmAttempt()
+        let liveOK = JITBootstrap.prewarm() && JITBootstrap.isLive
+        if liveOK {
+            status = "JIT Açık (1 GB RX/RW bölgesi ve kod çalıştırma testi doğrulandı)."
+            error = nil
+            connectionProblem = nil
+            attachGeneration += 1
+            log("\(sourceName) attached and passed RX selftest (42)")
+        } else {
+            status = nil
+            connectionProblem = .selftest
+            error = JITBootstrap.lastFailure ?? ConnectionProblem.selftest.message
+            log("\(sourceName) attached (CS_DEBUGGED=1) but JIT prewarm/selftest FAILED")
+            showSetup = true
+        }
+    }
+
     private func awaitTrollStore() {
         busy = true
-        status = "Waiting for TrollStore to enable JIT…"
+        status = "TrollStore üzerinden JIT izni bekleniyor…"
         log("waiting for TrollStore's attach")
         _ = Self.waitForDebugger(timeout: 60) { [weak self] attached in
             guard let self else { return }
             busy = false
             if attached {
-                status = "JIT is on."
-                error = nil
-                attachGeneration += 1
-                log("TrollStore enabled JIT")
+                verifyLiveJITAfterAttach(sourceName: "TrollStore")
             } else {
                 status = nil
-                error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure Henge was "
-                      + "installed through TrollStore (or is signed with get-task-allow)."
+                error = "TrollStore JIT iznini etkinleştirmedi. TrollStore Ayarları'nda 'URL Scheme' seçeneğini açın ve Henge'in TrollStore ile kurulduğundan (veya get-task-allow ile imzalandığından) emin olun."
                 log("TrollStore did not enable JIT within a minute")
                 showSetup = true
             }
         }
     }
 
-    /// After StikDebug is asked to attach: open() cannot say whether it found StikDebug,
-    /// so watch CS_DEBUGGED the same way awaitTrollStore does.
     private func awaitStikDebug() {
         busy = true
-        status = "Waiting for StikDebug to attach…"
+        status = "StikDebug bağlantısı bekleniyor…"
         log("waiting for StikDebug's attach")
         _ = Self.waitForDebugger(timeout: 60) { [weak self] attached in
             guard let self else { return }
             busy = false
             if attached {
-                status = "JIT is on."
-                error = nil
-                attachGeneration += 1
-                log("StikDebug attached")
+                verifyLiveJITAfterAttach(sourceName: "StikDebug")
             } else {
                 status = nil
-                error = "StikDebug did not attach within a minute. Make sure it's installed and try again."
+                error = "StikDebug 60 saniye içinde bağlanmadı. StikDebug ve LocalDevVPN'in açık olduğundan emin olup tekrar deneyin."
                 log("StikDebug did not attach within a minute")
                 showSetup = true
             }
@@ -288,7 +328,7 @@ final class JITCoordinator: ObservableObject {
             refreshPairingStatus()
             method = .builtIn
             prepared = false
-            status = "Pairing file imported."
+            status = "Eşleştirme dosyası içe aktarıldı."
             error = nil
             log("pairing file imported")
         } catch {
@@ -302,17 +342,22 @@ final class JITCoordinator: ObservableObject {
         refreshPairingStatus()
         method = .builtIn
         prepared = false
-        status = "Paired on this device."
+        status = "Bu cihazla eşleştirildi."
         error = nil
     }
 
     /// Check LocalDevVPN and the Developer Disk Image, mounting it when needed.
     func prepareBuiltIn() {
+        if !Entitlements.getTaskAllow {
+            connectionProblem = .signature
+            error = ConnectionProblem.signature.message
+            return
+        }
         guard let pairing = builtInPairing() else { return }
         busy = true
         error = nil
         connectionProblem = nil
-        status = "Checking LocalDevVPN and the Developer Disk Image…"
+        status = "LocalDevVPN ve Geliştirici Disk Görüntüsü (DDI) kontrol ediliyor…"
         RemotePairingPortDiscovery.resolve { port in
             HengeBuiltInJIT.send(.prepare(pairingData: pairing, rsdPort: port)) { [weak self] result in
                 guard let self else { return }
@@ -321,29 +366,35 @@ final class JITCoordinator: ObservableObject {
                 case .success(let response):
                     txmPresent = response.txmPresent
                     prepared = response.success
-                    status = response.success ? response.message : nil
+                    status = response.success ? "Kurulum doğrulandı: \(response.message)" : nil
                     error = response.success ? nil : helperFailure(response.message)
                     log("setup check \(response.success ? "passed" : "failed"): \(response.message)")
                 case .failure(let failure):
                     prepared = false
                     status = nil
-                    error = failure.localizedDescription
+                    error = helperFailure(failure.localizedDescription)
                 }
             }
         }
     }
 
     func enableBuiltIn() {
+        if !Entitlements.getTaskAllow {
+            connectionProblem = .signature
+            error = ConnectionProblem.signature.message
+            showSetup = true
+            return
+        }
         guard let pairing = builtInPairing() else { return }
         guard let script = JITBootstrap.scriptBase64 else {
-            error = "Henge's JIT script is missing from this installation. Reinstall Henge."
+            error = "Henge JIT betiği (henge-jit.js) uygulama paketinde bulunamadı. Henge'i yeniden yükleyin."
             return
         }
 
         busy = true
         error = nil
         connectionProblem = nil
-        status = "Starting Henge's JIT helper…"
+        status = "Yerleşik JIT yardımcısı başlatılıyor…"
         log("enabling JIT with the built-in helper")
         var readiness: Timer?
         var finished = false
@@ -358,10 +409,7 @@ final class JITCoordinator: ObservableObject {
                 log("built-in JIT failed: \(failure)")
                 showSetup = true
             } else {
-                status = "JIT is on."
-                error = nil
-                attachGeneration += 1
-                log("built-in helper attached")
+                verifyLiveJITAfterAttach(sourceName: "Built-in StikJIT")
             }
         }
 
@@ -369,10 +417,14 @@ final class JITCoordinator: ObservableObject {
             HengeBuiltInJIT.send(
                 .enable(targetPID: getpid(), pairingData: pairing, scriptBase64: script, rsdPort: port),
                 started: { [weak self] in
-                    self?.status = "Waiting for the helper to attach…"
+                    self?.status = "JIT yardımcısının bağlanması ve kod çalıştırma testi bekleniyor…"
                     readiness = Self.waitForDebugger { attached in
-                        finish(attached ? nil : "The helper did not attach within 90 seconds. "
-                                              + "Check that LocalDevVPN is connected, then try again.")
+                        if attached {
+                            finish(nil)
+                        } else {
+                            self?.connectionProblem = .vpn
+                            finish("JIT yardımcısı 90 saniye içinde bağlanamadı. LocalDevVPN bağlantısının açık olduğundan ve eşleştirme dosyasının güncel olduğundan emin olup tekrar deneyin.")
+                        }
                     }
                 },
                 completion: { [weak self] result in
@@ -385,7 +437,7 @@ final class JITCoordinator: ObservableObject {
                             finish(self?.helperFailure(response.message) ?? response.message)
                         }
                     case .failure(let failure):
-                        finish(failure.localizedDescription)
+                        finish(self?.helperFailure(failure.localizedDescription) ?? failure.localizedDescription)
                     }
                 })
         }
@@ -394,7 +446,7 @@ final class JITCoordinator: ObservableObject {
     func resetDDI() {
         busy = true
         error = nil
-        status = "Resetting the Developer Disk Image cache…"
+        status = "Geliştirici Disk Görüntüsü (DDI) önbelleği sıfırlanıyor…"
         HengeBuiltInJIT.send(.resetDDI) { [weak self] result in
             guard let self else { return }
             busy = false
@@ -416,7 +468,8 @@ final class JITCoordinator: ObservableObject {
             return nil
         }
         guard let pairing = try? JITPairingFileStore.data() else {
-            error = "Pair this device or import its pairing file first."
+            connectionProblem = .pairing
+            error = "Önce bu cihazı eşleştirin veya bilgisayarda oluşturulan eşleştirme dosyasını (pairingFile.plist) içe aktarın."
             return nil
         }
         return pairing
@@ -426,7 +479,10 @@ final class JITCoordinator: ObservableObject {
     /// explanation (the helper's own message is already in the log).
     private func helperFailure(_ message: String) -> String {
         connectionProblem = ConnectionProblem(helperMessage: message)
-        return connectionProblem?.message ?? message
+        if let problem = connectionProblem {
+            return "\(problem.message)\n(Teknik detay: \(message))"
+        }
+        return message
     }
 
     /// Polls CS_DEBUGGED until it is set or `timeout` passes.
@@ -455,7 +511,7 @@ enum LocalDevVPN {
     static let connect = URL(string: "localdevvpn://enable?scheme=henge")!
 
     static var isInstalled: Bool { UIApplication.shared.canOpenURL(URL(string: "localdevvpn://")!) }
-    static var actionTitle: String { isInstalled ? "Connect LocalDevVPN" : "Get LocalDevVPN" }
+    static var actionTitle: String { isInstalled ? "LocalDevVPN'i Bağla" : "LocalDevVPN'i İndir" }
 
     @MainActor static func open() {
         let installed = isInstalled

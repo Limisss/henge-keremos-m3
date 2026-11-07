@@ -197,6 +197,11 @@ static uint8_t *alloc_no_footprint(uint64_t size) {
 /* A mapped file's page is slow to touch the first time and as fast as any other
    afterwards, so a background thread gets there before the guest does. Adding
    zero dirties the page without changing it, whatever the guest has written. */
+#if __has_include(<os/proc.h>)
+#include <os/proc.h>
+#define HAVE_OS_PROC 1
+#endif
+
 struct PrefaultArgs {
     uint8_t *ram;
     uint64_t size;
@@ -208,9 +213,25 @@ static void *prefault_thread(void *arg) {
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (uint64_t off = 0; off < a.size; off += 0x4000) __atomic_fetch_add((volatile uint64_t *)(a.ram + off), 0, __ATOMIC_RELAXED);
+    uint64_t touched = 0;
+    for (uint64_t off = 0; off < a.size; off += 0x4000) {
+#if HAVE_OS_PROC
+        if ((off & ((64ull << 20) - 1)) == 0) {
+            size_t avail = os_proc_available_memory();
+            if (avail > 0 && avail < (512ull << 20)) {
+                fprintf(stderr, "hengevm: stopping guest RAM prefault at %llu MB (available headroom %zu MB)\n",
+                        (unsigned long long)(off >> 20), avail >> 20);
+                break;
+            }
+        }
+#endif
+        __atomic_fetch_add((volatile uint64_t *)(a.ram + off), 0, __ATOMIC_RELAXED);
+        touched = off + 0x4000;
+    }
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    fprintf(stderr, "hengevm: guest RAM file ready in %.1f s\n", (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
+    fprintf(stderr, "hengevm: guest RAM file prefaulted %llu/%llu MB in %.1f s\n",
+            (unsigned long long)(touched >> 20), (unsigned long long)(a.size >> 20),
+            (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9);
     return NULL;
 }
 
@@ -254,7 +275,9 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, uint64_t ram_size,
        drop by itself, so the guest can have more RAM than the app may hold.
        The file is unlinked at once and goes away with the process. */
     const char *ram_file = getenv("HV_RAM_FILE");
+    int backed_by_file = 0;
     b->ram = MAP_FAILED;
+    b->rom = MAP_FAILED;
     if (!getenv("HV_RAM_NO_LEDGER")) {
         uint8_t *free_of_footprint = alloc_no_footprint(ram_size);
         if (free_of_footprint) b->ram = free_of_footprint;
@@ -267,25 +290,41 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, uint64_t ram_size,
                 b->ram = mmap(NULL, ram_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
             close(fd);
         }
-        if (b->ram == MAP_FAILED) fprintf(stderr, "hengevm: guest RAM file %s failed: %s; using anonymous memory\n", ram_file, strerror(errno));
+        if (b->ram == MAP_FAILED) fprintf(stderr, "hengevm: guest RAM file %s (%llu MB) failed: %s; using anonymous memory\n", ram_file, (unsigned long long)(ram_size >> 20), strerror(errno));
         else {
             fprintf(stderr, "hengevm: guest RAM (%llu MB) is backed by a file\n", (unsigned long long)(ram_size >> 20));
-            if (!getenv("HV_RAM_NO_PREFAULT")) {
-                struct PrefaultArgs *a = malloc(sizeof *a);
-                a->ram = b->ram, a->size = ram_size;
-                pthread_t t;
-                if (pthread_create(&t, NULL, prefault_thread, a) == 0) pthread_detach(t);
-                else free(a);
-            }
+            backed_by_file = 1;
         }
     }
-    if (b->ram == MAP_FAILED) b->ram = mmap(NULL, ram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (b->ram == MAP_FAILED) return -1;
+    if (b->ram == MAP_FAILED) {
+        b->ram = mmap(NULL, ram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (b->ram == MAP_FAILED) {
+            fprintf(stderr, "hengevm: anonymous guest RAM mmap (%llu MB) failed: %s\n", (unsigned long long)(ram_size >> 20), strerror(errno));
+            return -1;
+        }
+    }
     b->rom = mmap(NULL, ROM_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (b->rom == MAP_FAILED) return -1;
+    if (b->rom == MAP_FAILED) {
+        fprintf(stderr, "hengevm: firmware ROM mmap failed: %s\n", strerror(errno));
+        hv_vmapple_free(b);
+        return -1;
+    }
     /* QEMU maps the firmware as RAM, and so do we. */
-    hv_machine_add_ram(m, VMAPPLE_FIRMWARE, ROM_SIZE, b->rom, 0);
-    hv_machine_add_ram(m, VMAPPLE_MEM, ram_size, b->ram, 0);
+    if (hv_machine_add_ram(m, VMAPPLE_FIRMWARE, ROM_SIZE, b->rom, 0) < 0 ||
+        hv_machine_add_ram(m, VMAPPLE_MEM, ram_size, b->ram, 0) < 0) {
+        fprintf(stderr, "hengevm: hv_machine_add_ram metadata allocation failed for %llu MB\n", (unsigned long long)(ram_size >> 20));
+        hv_vmapple_free(b);
+        return -1;
+    }
+    if (backed_by_file && !getenv("HV_RAM_NO_PREFAULT")) {
+        struct PrefaultArgs *a = malloc(sizeof *a);
+        if (a) {
+            a->ram = b->ram, a->size = ram_size;
+            pthread_t t;
+            if (pthread_create(&t, NULL, prefault_thread, a) == 0) pthread_detach(t);
+            else free(a);
+        }
+    }
 
     b->gic = hv_gicv3_create(m, VMAPPLE_GIC_DIST, VMAPPLE_GIC_REDIST);
     hv_machine_add_mmio(m, VMAPPLE_GIC_MSI, 0x10000, b, gic_msi_read, gic_msi_write, "gic-msi");
@@ -342,5 +381,17 @@ void hv_vmapple_reset_cpu(HvVmapple *b) {
         c->mpidr = 0x80000000u | (uint32_t)i; /* Aff0 = the config's cpu_ids[i], bit 31 RES1 */
         c->pc = VMAPPLE_FIRMWARE;
         c->off = i != 0; /* secondaries wait for PSCI CPU_ON */
+    }
+}
+
+void hv_vmapple_free(HvVmapple *b) {
+    if (!b) return;
+    if (b->ram && b->ram != MAP_FAILED && b->ram_size > 0) {
+        munmap(b->ram, b->ram_size);
+        b->ram = NULL;
+    }
+    if (b->rom && b->rom != MAP_FAILED) {
+        munmap(b->rom, ROM_SIZE);
+        b->rom = NULL;
     }
 }

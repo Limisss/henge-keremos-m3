@@ -14,13 +14,13 @@ struct MacOSRelease: Identifiable, Hashable {
     static let all: [MacOSRelease] = [
         MacOSRelease(id: "24G90", name: "macOS Sequoia 15.6.1",
                      url: URL(string: "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw")!,
-                     bytes: 16_035 << 20, note: "Recommended: the version Henge is tested with."),
+                     bytes: 16_035 << 20, note: "Önerilen: Henge ve iPad Air M3 (3 GB RAM) ile doğrulanan sürüm."),
         MacOSRelease(id: "25G83", name: "macOS Tahoe 26.6.2",
                      url: URL(string: "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw")!,
-                     bytes: 18_856 << 20, note: "Not tested with Henge yet."),
+                     bytes: 18_856 << 20, note: "Henüz bu cihazda uzun süreli test edilmedi."),
         MacOSRelease(id: "26B123", name: "macOS 27.2",
                      url: URL(string: "https://updates.cdn-apple.com/2026FallFCS/c9671975-52db-4fb5-9af2-00217169ba8d/UniversalMac_27.2_26B123_Restore.ipsw")!,
-                     bytes: 24_409 << 20, note: "The newest. Not tested with Henge yet."),
+                     bytes: 24_409 << 20, note: "En yeni sürüm (deneysel, yüksek disk ve bellek gereksinimi)."),
     ]
 }
 
@@ -40,12 +40,21 @@ final class Installer: NSObject, ObservableObject {
         case failed(String)
     }
 
+    struct RetryContext: Equatable {
+        let release: MacOSRelease
+        let name: String
+        let failedRAMMB: Int
+        let cpus: Int
+        let keepImage: Bool
+    }
+
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var received: Int64 = 0
     @Published private(set) var expected: Int64 = 0
     @Published private(set) var step: Int = 0
     @Published private(set) var stepProgress: Double = 0
     @Published private(set) var machineName = ""
+    @Published private(set) var retryContext: RetryContext?
 
     private var session: URLSession?
     private var downloadContinuation: CheckedContinuation<URL, Error>?
@@ -59,14 +68,42 @@ final class Installer: NSObject, ObservableObject {
         }
     }
 
+    /// True when the last install failed before the VM started (`henge_vm_state() == 0`) with > 3 GB RAM,
+    /// so we can safely retry at 3 GB (`3072 MB`) in the current session without restarting Henge.
+    var canRetryInProcessWith3GB: Bool {
+        guard let ctx = retryContext else { return false }
+        return ctx.failedRAMMB > 3072 && henge_vm_state() == 0
+    }
+
+    /// True when a VM already ran and stopped during the failed install (`henge_vm_state() != 0`),
+    /// meaning Henge must be restarted before retrying, though the downloaded IPSW is preserved.
+    var requiresAppRestartBeforeRetry: Bool {
+        retryContext != nil && henge_vm_state() != 0
+    }
+
     nonisolated static var imageDirectory: URL { Machines.root.appendingPathComponent("Restore images", isDirectory: true) }
     nonisolated static func imagePath(_ r: MacOSRelease) -> URL { imageDirectory.appendingPathComponent("\(r.id).ipsw") }
 
-    /// The size of the image on this iPhone, if a whole one is there (the listed sizes are rounded).
+    /// The size of the image on this iPad/iPhone, if a whole one is there (also checks Documents/ for manually placed IPSWs).
     static func imageSize(_ r: MacOSRelease) -> Int64? {
-        let values = try? imagePath(r).resourceValues(forKeys: [.fileSizeKey])
-        guard let size = values?.fileSize, Int64(size) > r.bytes / 2 else { return nil }
-        return Int64(size)
+        let dest = imagePath(r)
+        if let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, Int64(size) > r.bytes / 2 {
+            return Int64(size)
+        }
+        // Check if the user placed the IPSW in Documents (Finder file sharing / Files app)
+        let candidates = [
+            Machines.inbox.appendingPathComponent("\(r.id).ipsw"),
+            Machines.inbox.appendingPathComponent(r.url.lastPathComponent),
+        ]
+        for candidate in candidates {
+            if let size = (try? candidate.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, Int64(size) > r.bytes / 2 {
+                try? FileManager.default.createDirectory(at: imageDirectory, withIntermediateDirectories: true)
+                Machines.excludeFromBackup(imageDirectory)
+                try? FileManager.default.moveItem(at: candidate, to: dest)
+                return Int64(size)
+            }
+        }
+        return nil
     }
 
     static func haveImage(_ r: MacOSRelease) -> Bool { imageSize(r) != nil }
@@ -77,11 +114,27 @@ final class Installer: NSObject, ObservableObject {
     static func spaceNeeded(_ r: MacOSRelease) -> Int64 { (haveImage(r) ? 0 : r.bytes) + newMacBytes }
     private static let newMacBytes: Int64 = 24 << 30
 
-    func reset() { if !busy { phase = .idle } }
+    func reset() {
+        if !busy {
+            phase = .idle
+            retryContext = nil
+        }
+    }
+
+    func retryWith3GB() {
+        guard let ctx = retryContext, !busy else { return }
+        start(ctx.release, name: ctx.name, ramMB: 3072, cpus: ctx.cpus, keepImage: ctx.keepImage)
+    }
+
+    func retrySameConfig() {
+        guard let ctx = retryContext, !busy else { return }
+        start(ctx.release, name: ctx.name, ramMB: ctx.failedRAMMB, cpus: ctx.cpus, keepImage: ctx.keepImage)
+    }
 
     func start(_ release: MacOSRelease, name: String, ramMB: Int, cpus: Int, keepImage: Bool) {
         guard !busy else { return }
         machineName = name
+        retryContext = nil
         UIApplication.shared.isIdleTimerDisabled = true // the screen locking would suspend the download and the restore
         Task {
             defer { UIApplication.shared.isIdleTimerDisabled = false }
@@ -100,11 +153,12 @@ final class Installer: NSObject, ObservableObject {
                 Machines.shared.add(mac)
                 if !keepImage { try? FileManager.default.removeItem(at: ipsw) }
                 HengeLog.log("install", "\(name): installed \(release.name)")
-                phase = .done("\(release.name) is installed on \(name). Quit Henge (swipe it away) and open it again, then tap Start.")
+                phase = .done("\(release.name), '\(name)' üzerine başarıyla kuruldu. İlk açılış için Henge'i tamamen kapatıp (yukarı kaydırarak) yeniden açın ve Başlat'a dokunun.")
             } catch {
                 HengeLog.log("install", "failed: \(error.localizedDescription)")
-                // A half-installed Mac is no use, and its disk can be many gigabytes. The download stays.
+                // A half-installed Mac is no use, and its disk can be many gigabytes. The download ALWAYS stays on failure so the user never has to re-download 16+ GB!
                 if let made, henge_vm_state() != 1 { try? FileManager.default.removeItem(at: made.directory) }
+                retryContext = RetryContext(release: release, name: name, failedRAMMB: ramMB, cpus: cpus, keepImage: keepImage)
                 phase = .failed(error.localizedDescription)
             }
         }
@@ -115,7 +169,7 @@ final class Installer: NSObject, ObservableObject {
             .volumeAvailableCapacityForImportantUsage ?? 0
         let needed = Self.spaceNeeded(r)
         if free > 0 && free < needed {
-            throw message("This install needs about \(ByteText.string(UInt64(needed))) free; this \(Device.name) has \(ByteText.string(UInt64(free))).")
+            throw message("Bu kurulum için yaklaşık \(ByteText.string(UInt64(needed))) boş alan gerekiyor; bu \(Device.name)'da \(ByteText.string(UInt64(free))) boş alan var.")
         }
     }
 
@@ -143,7 +197,7 @@ final class Installer: NSObject, ObservableObject {
                 try await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }
-        throw message("The download kept failing.")
+        throw message("İndirme işlemi birden fazla denemeye rağmen tamamlanamadı. İnternet bağlantınızı kontrol edip tekrar deneyin (kaldığı yerden devam eder).")
     }
 
     private func downloadOnce(_ url: URL) async throws -> URL {
@@ -172,11 +226,11 @@ final class Installer: NSObject, ObservableObject {
         Machines.excludeFromBackup(Machines.root)
         try? fm.removeItem(at: mac.rom)
         try fm.copyItem(at: rom, to: mac.rom)
-        guard fm.createFile(atPath: mac.disk.path, contents: nil) else { throw message("Cannot create the disk.") }
+        guard fm.createFile(atPath: mac.disk.path, contents: nil) else { throw message("Sanal disk dosyası oluşturulamadı.") }
         let h = try FileHandle(forWritingTo: mac.disk)
         try h.truncate(atOffset: UInt64(64) << 30) // sparse: blocks are only used as macOS writes them
         try h.close()
-        guard henge_make_aux(mac.aux.path) == 0 else { throw message("Cannot create the auxiliary storage.") }
+        guard henge_make_aux(mac.aux.path) == 0 else { throw message("Yardımcı depolama (auxiliary.bin) oluşturulamadı.") }
         let info: [String: Any] = ["name": name, "ecid": ecid, "seed": 0, "ramMB": ramMB]
         try JSONSerialization.data(withJSONObject: info).write(to: mac.directory.appendingPathComponent("machine.json"))
         mac.diskBytes = 64 << 30
@@ -187,9 +241,9 @@ final class Installer: NSObject, ObservableObject {
     // MARK: The restore
 
     private func install(_ mac: VirtualMac, ipsw: URL, cpus: Int) async throws {
-        guard JITBootstrap.ready else { throw message("Turn on JIT first: the installer runs the Mac's own restore system, which needs it.") }
+        guard JITBootstrap.ready else { throw message("Önce JIT'i etkinleştirip doğrulayın: kurulum motoru macOS kurtarma sistemini çalıştırmak için JIT gerektirir.") }
         let ram = GuestMemory.prepare(mac)
-        guard ram >= 2048 else { throw message("Installing needs a few more GB of free storage for the Mac's memory.") }
+        guard ram >= 2048 else { throw message("Kurulum için sanal Mac belleğine yetecek kadar boş depolama veya sanal adres alanı yok.") }
         let work = mac.directory.appendingPathComponent("restore", isDirectory: true)
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         var buffer = [CChar](repeating: 0, count: 256)
@@ -201,13 +255,13 @@ final class Installer: NSObject, ObservableObject {
             step = Int(henge_install_step())
             stepProgress = henge_install_progress()
             if step == 100 { break }
-            if step == 101 { throw message("The restore failed. The log (Settings, or Documents/henge.log) says why.") }
+            if step == 101 { throw message("macOS kurulumu sırasında hata oluştu. İndirilen IPSW dosyası korundu; Ayarlar › Tanılama Raporu'ndan nedeni inceleyebilirsiniz.") }
             if henge_vm_state() == 2 && step < 100 {
                 // The restore ends with the machine restarting, and idevicerestore finishes a
                 // little after; a stop with no result after that is a failure.
                 for _ in 0..<90 where henge_install_step() < 100 { try await Task.sleep(nanoseconds: 1_000_000_000) }
                 if henge_install_step() == 100 { break }
-                throw message("The machine stopped during the restore (\(String(cString: henge_vm_exit_reason()))).")
+                throw message("Sanal makine kurulum sırasında durdu (\(String(cString: henge_vm_exit_reason()))). İndirilen IPSW dosyası korundu.")
             }
         }
         if henge_vm_state() == 1 { henge_vm_stop() }
@@ -216,13 +270,13 @@ final class Installer: NSObject, ObservableObject {
 
     static func stepName(_ step: Int) -> String {
         switch step {
-        case 0: return "Finding the Mac"
-        case 1: return "Starting the installer"
-        case 2: return "Writing macOS"
-        case 3: return "Checking macOS"
-        case 4: return "Installing firmware"
-        case 6, 7: return "Installing system files"
-        default: return "Installing"
+        case 0: return "Sanal Mac DFU modunda algılanıyor"
+        case 1: return "Kurulum ortamı başlatılıyor"
+        case 2: return "macOS disk görüntüsü yazılıyor"
+        case 3: return "macOS dosya sistemi doğrulanıyor"
+        case 4: return "Sistem ürün yazılımı (firmware) kuruluyor"
+        case 6, 7: return "Sistem dosyaları kişiselleştiriliyor"
+        default: return "macOS kuruluyor"
         }
     }
 

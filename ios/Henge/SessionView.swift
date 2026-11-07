@@ -15,6 +15,11 @@ struct SessionView: View {
     @State private var blocksPerSecond: Double = 0
     @State private var framesOut: UInt64 = 0
     @State private var framesIn: UInt64 = 0
+    @State private var gpuFrames: UInt64 = 0
+    @State private var gpuFPS: Double = 0
+    @State private var bootDurationSeconds: Double?
+    @State private var activeRAMMB: Int = 0
+    @State private var pillAtBottom = true
     @State private var log: [String] = []
     @State private var started = Date()
     @AppStorage("henge.cpus") private var cpus = 4
@@ -47,8 +52,8 @@ struct SessionView: View {
                         if display.isExternal {
                             VStack(spacing: 8) {
                                 Image(systemName: "display").font(.largeTitle)
-                                Text("Mac on external display").font(.headline)
-                                Text("Use the trackpad, keyboard or a connected mouse.")
+                                Text("Mac harici ekranda gösteriliyor").font(.headline)
+                                Text("Magic Keyboard, izleme dörtgeni veya fareyi buradan kullanabilirsiniz.")
                                     .font(.subheadline)
                             }
                             .foregroundStyle(.white)
@@ -87,10 +92,10 @@ struct SessionView: View {
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showDetails) { details }
-        .confirmationDialog("Shut down \(mac.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("Shut Down", role: .destructive) { finish() }
+        .confirmationDialog("'\(mac.name)' kapatılsın mı?", isPresented: $confirmStop, titleVisibility: .visible) {
+            Button("Mac'i Kapat", role: .destructive) { finish() }
         } message: {
-            Text("This turns the Mac off at once. Anything not saved on it is lost.")
+            Text("Sanal Mac hemen kapatılır. Kaydedilmemiş çalışmalar kaybolabilir.")
         }
         .onChange(of: zoomed) { on in
             zoomFollowing?.cancel()
@@ -198,15 +203,15 @@ struct SessionView: View {
     @ViewBuilder private func uprightControls(_ layout: Layout) -> some View {
         if !typing {
             HStack {
-                tool("keyboard", "Keyboard") { typing = true }
+                tool("keyboard", "Klavye") { typing = true }
                 Spacer()
                 pasteTool
                 Spacer()
-                tool("plus.magnifyingglass", "Zoom in") { zoomed = true }
+                tool("plus.magnifyingglass", "Yakınlaştır") { zoomed = true }
                 Spacer()
-                tool("info.circle", "Details") { showDetails = true }
+                tool("info.circle", "Detaylar ve Ölçüm") { showDetails = true }
                 Spacer()
-                tool("power", "Shut down", tint: Desk.bad) { stopTapped() }
+                tool("power", "Kapat", tint: Desk.bad) { stopTapped() }
             }
             .padding(.horizontal, 22)
             .frame(width: layout.pad.width, height: 54)
@@ -224,22 +229,22 @@ struct SessionView: View {
             ZStack {
                 Trackpad()
                 if compact {
-                    Text("Trackpad").font(.system(size: 14)).foregroundStyle(Desk.faint).allowsHitTesting(false)
+                    Text("İzleme Dörtgeni (Trackpad)").font(.system(size: 14)).foregroundStyle(Desk.faint).allowsHitTesting(false)
                 } else {
                     VStack(spacing: 6) {
-                        hint("Drag", "to move")
-                        hint("Tap", "to click")
-                        hint("Hold, then drag", "to grab")
-                        hint("Two fingers", "to scroll")
+                        hint("Sürükle", "imleci hareket ettir")
+                        hint("Dokun", "sol tıkla")
+                        hint("Basılı tutup sürükle", "pencere taşı / seç")
+                        hint("İki parmakla", "kaydır (scroll)")
                     }
                     .allowsHitTesting(false)
                 }
             }
             Rectangle().fill(Desk.hairline).frame(height: 0.5)
             HStack(spacing: 0) {
-                MouseButton(title: "Click", button: 0)
+                MouseButton(title: "Sol Tık", button: 0)
                 Rectangle().fill(Desk.hairline).frame(width: 0.5)
-                MouseButton(title: "Right-click", button: 1)
+                MouseButton(title: "Sağ Tık", button: 1)
             }
             .frame(height: compact ? 50 : 70)
         }
@@ -276,25 +281,28 @@ struct SessionView: View {
         .accessibilityLabel(label)
     }
 
-    // MARK: Filling the phone
+    // MARK: Filling the phone / iPad
 
     @ViewBuilder private func floatingControls(_ layout: Layout) -> some View {
         let landscape = layout.touch.width > layout.touch.height
         let top = layout.insets.top + (landscape ? 8 : 6)
         let pill = HStack(spacing: 4) {
-            tool("keyboard", "Keyboard", tint: .white) { typing.toggle() }
+            tool("keyboard", "Ekran Klavyesi", tint: .white) { typing.toggle() }
             pasteTool
-            tool(zoomed ? "minus.magnifyingglass" : "plus.magnifyingglass", zoomed ? "Zoom out" : "Zoom in", tint: zoomed ? Desk.accentLight : .white) { zoomed.toggle() }
-            tool("info.circle", "Details", tint: .white) { showDetails = true }
+            tool(zoomed ? "minus.magnifyingglass" : "plus.magnifyingglass", zoomed ? "Uzaklaştır" : "Yakınlaştır", tint: zoomed ? Desk.accentLight : .white) { zoomed.toggle() }
+            tool("info.circle", "Detaylar ve Ölçüm", tint: .white) { showDetails = true }
+            tool(pillAtBottom ? "arrow.up.to.line" : "arrow.down.to.line", "Araç Çubuğu Konumu", tint: .white.opacity(0.8)) {
+                withAnimation(.easeInOut(duration: 0.2)) { pillAtBottom.toggle() }
+            }
             Rectangle().fill(Color.white.opacity(0.3)).frame(width: 1, height: 22).padding(.horizontal, 4)
-            tool("power", "Shut down", tint: Desk.bad) { stopTapped() }
+            tool("power", "Mac'i Kapat", tint: Desk.bad) { stopTapped() }
         }
         .padding(.horizontal, 8)
         .frame(height: 50)
         .deskGlass(in: Capsule())
-        if let barY = layout.barY {
+        if let barY = layout.barY, !pillAtBottom {
             pill.position(x: layout.touch.midX, y: barY)
-        } else if landscape || typing {
+        } else if typing || !pillAtBottom {
             pill.position(x: layout.touch.midX, y: top + 25)
         } else {
             pill.position(x: layout.touch.midX, y: layout.touch.height - layout.insets.bottom - 34)
@@ -354,22 +362,40 @@ struct SessionView: View {
     // MARK: Status
 
     private func errorCard(_ text: String, _ layout: Layout) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("This Mac could not start").font(.system(size: 17, weight: .semibold))
+        let canFallbackTo3GB = henge_vm_state() == 0 && (activeRAMMB > 3072 || mac.ramMB > 3072)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Sanal Mac Başlatılamadı").font(.system(size: 17, weight: .semibold))
             Text(text).font(.system(size: 14)).foregroundStyle(Desk.dim)
-            Button("Close") { close() }.font(.system(size: 15, weight: .semibold)).foregroundStyle(Desk.accentLight)
+            if canFallbackTo3GB {
+                Text("Başarısız bellek ayırma kaynakları temizlendi. Uygulamayı kapatmadan 3 GB (3072 MB) güvenli RAM ile hemen başlatabilirsiniz:")
+                    .font(.system(size: 12)).foregroundStyle(Desk.good)
+                Button("3 GB RAM ile Hemen Başlat") {
+                    var updated = mac
+                    updated.ramMB = 3072
+                    Machines.shared.update(updated)
+                    error = nil
+                    Task { await run(overrideRAMMB: 3072) }
+                }
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Desk.good)
+                .padding(.top, 2)
+            } else if henge_vm_state() != 0 {
+                Text("Not: Bu oturumda sanal makine motoru çalıştığı için yeniden başlatmadan önce Henge'i kapatıp tekrar açmanız gerekir.")
+                    .font(.system(size: 12)).foregroundStyle(.orange)
+            }
+            Button("Kapat") { close() }.font(.system(size: 15, weight: .semibold)).foregroundStyle(Desk.accentLight)
         }
         .padding(18)
-        .frame(width: min(layout.touch.width, 390) - 32, alignment: .leading)
+        .frame(width: min(layout.touch.width, 410) - 32, alignment: .leading)
         .background(Desk.raised, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .position(x: (layout.fillsPhone ? layout.touch.midX : layout.pad.midX), y: layout.fillsPhone ? layout.touch.midY : layout.pad.midY)
     }
 
     private var phase: String {
         switch state {
-        case 0: return error == nil ? "Starting…" : "Not started"
-        case 1: return userCode ? "macOS is running" : "Booting"
-        default: return "Stopped (\(String(cString: henge_vm_exit_reason())))"
+        case 0: return error == nil ? "Başlatılıyor…" : "Başlatılamadı"
+        case 1: return userCode ? "macOS Çalışıyor (EL0 Aktif)" : "macOS Önyükleniyor (Kernel)"
+        default: return "Durdu (\(String(cString: henge_vm_exit_reason())))"
         }
     }
 
@@ -377,15 +403,36 @@ struct SessionView: View {
         NavigationStack {
             List {
                 Section(phase) {
-                    LabeledContent("CPUs on", value: "\(cpusOn) of \(cpus)")
-                    LabeledContent("Translated blocks", value: String(format: "%.1f M/s", blocksPerSecond / 1e6))
-                    LabeledContent("Network frames", value: "\(framesOut) out, \(framesIn) in")
-                    LabeledContent("Up", value: "\(Int(Date().timeIntervalSince(started))) s")
+                    LabeledContent("Aktif CPU", value: "\(cpusOn) / \(cpus)")
+                    LabeledContent("Sanal Mac RAM", value: "\(activeRAMMB > 0 ? activeRAMMB : mac.ramMB) MB")
+                    LabeledContent("Açılış Süresi (EL0)", value: bootDurationSeconds.map { String(format: "%.1f sn", $0) } ?? "Ölçülüyor…")
+                    LabeledContent("Çevrilen Blok Hızı", value: String(format: "%.2f M/sn", blocksPerSecond / 1e6))
+                    LabeledContent("GPU Kare Hızı", value: String(format: "%.1f kare/sn (toplam %llu)", gpuFPS, gpuFrames))
+                    LabeledContent("Ağ Paketleri", value: "\(framesOut) giden, \(framesIn) gelen")
+                    LabeledContent("Çalışma Süresi", value: "\(Int(Date().timeIntervalSince(started))) sn")
                 }
-                Section("Sharing") {
-                    LabeledContent("Clipboard and folder", value: helperRunning ? "On" : "Not set up")
+                Section("Bellek Durumu (4 Boyutlu Tanılama)") {
+                    LabeledContent("Cihaz Fiziksel RAM", value: "\(Device.physicalMemoryMB) MB")
+                    LabeledContent("Uygulama Bellek Sınırı", value: "\(Device.processMemoryLimitMB) MB")
+                    LabeledContent("Anlık Tüketim (phys_footprint)", value: "\(Device.currentFootprintMB) MB")
+                    LabeledContent("Kalan Güvenli Pay (jetsam öncesi)", value: "\(Device.currentAvailableMemoryMB) MB")
+                }
+                Section("Klavye ve İzleme Dörtgeni (Magic Keyboard)") {
+                    Button("Takılı Tuşları ve İmleç Kilidini Sıfırla") {
+                        HardwareKeys.releaseAll()
+                        HardwareMouse.shared.releaseButtons()
+                        StickyKeys.shared.releaseAll()
+                        HardwareMouse.shared.reloadSettings()
+                        PointerLock.set(true)
+                        showDetails = false
+                    }
+                    Text("iPadOS kısayolları (⌘-Tab, Dünya tuşu) sonrasında bir tuş basılı kalırsa veya imleç kilidi çıkarsa bu düğmeyle sıfırlayabilirsiniz.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Dosya ve Pano Paylaşımı") {
+                    LabeledContent("Pano ve Klasör Paylaşımı", value: helperRunning ? "Açık" : "Kurulmadı")
                     if !helperRunning {
-                        Button("Type the Set Up Command") {
+                        Button("Kurulum Komutunu Terminal'e Yaz") {
                             showDetails = false
                             Task {
                                 try? await Task.sleep(nanoseconds: 600_000_000)
@@ -394,11 +441,11 @@ struct SessionView: View {
                         }
                     }
                     Text(helperRunning
-                         ? "Put files in Files, Henge, Shared to see them in the Henge folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
-                         : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) and needs the Mac's keyboard layout to be U.S.")
+                         ? "Dosyalar (Files) › Henge › Shared klasörüne koyduğunuz dosyalar Mac'in ev dizinindeki Henge klasöründe görünür. Mac'te kopyaladığınız metinler iPad panosuna aktarılır."
+                         : "Her Mac için bir kez: Mac içinde Terminal'i açın, bu düğmeye dokunun ve Return tuşuna basın. (Yazılacak komut: \(Sharing.setUpCommand), ABD klavye düzeni gerekir.)")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                Section("Log") {
+                Section("Günlük (Son 30 Satır)") {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(Array(log.suffix(30).enumerated()), id: \.offset) { _, line in
                             Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
@@ -406,43 +453,65 @@ struct SessionView: View {
                     }
                 }
             }
-            .navigationTitle("Details")
+            .navigationTitle("Performans ve Detaylar")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Kapat") { showDetails = false }
+                }
+            }
         }
         .preferredColorScheme(.dark)
     }
 
     // MARK: Running
 
-    private func run() async {
-        let ram = GuestMemory.prepare(mac)
-        HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB")
+    private func run(overrideRAMMB: Int? = nil) async {
+        var targetMac = mac
+        if let overrideRAMMB { targetMac.ramMB = overrideRAMMB }
+        let ram = GuestMemory.prepare(targetMac)
+        activeRAMMB = Int(ram)
+        HengeLog.log("session", "available memory \(henge_available_memory() >> 20) MB, footprint \(henge_phys_footprint() >> 20) MB")
         guard ram >= 1024 else {
-            error = "There is not room for this Mac's memory: it needs a few GB of free storage."
+            error = "Bu sanal Mac'in belleği için yeterli boş depolama veya sanal adres alanı yok."
             return
         }
         var buffer = [CChar](repeating: 0, count: 256)
         Sharing.prepare()
-        henge_vm_set_display(UInt32(mac.screen.width), UInt32(mac.screen.height))
-        let rc = henge_vm_boot(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus), &buffer, buffer.count)
+        henge_vm_set_display(UInt32(targetMac.screen.width), UInt32(targetMac.screen.height))
+        let rc = henge_vm_boot(targetMac.rom.path, targetMac.disk.path, targetMac.aux.path, targetMac.ecid, targetMac.seed, ram, Int32(cpus), &buffer, buffer.count)
         if rc != 0 {
             error = String(cString: buffer)
             return
         }
         started = Date()
-        var used = mac
+        bootDurationSeconds = nil
+        var used = targetMac
         used.lastUsed = started
         Machines.shared.update(used)
         var lastBlocks = henge_vm_blocks()
+        var lastGPUFrames = henge_vm_gpu_frames()
         var lastTime = Date()
         var tick = 0
         while !Task.isCancelled {
             state = henge_vm_state()
             cpusOn = henge_vm_cpus_on()
-            userCode = userCode || henge_vm_guest_el0() != 0
-            let now = Date(), blocks = henge_vm_blocks()
-            blocksPerSecond = Double(blocks &- lastBlocks) / max(now.timeIntervalSince(lastTime), 0.001)
+            let nowEL0 = henge_vm_guest_el0() != 0
+            if nowEL0 && !userCode {
+                let dur = Date().timeIntervalSince(started)
+                bootDurationSeconds = dur
+                HengeLog.log("bench", String(format: "macOS user-space (EL0) reached in %.1f s (RAM %llu MB, CPUs %d, phys_footprint %zu MB, avail %zu MB)",
+                                             dur, ram, cpus, henge_phys_footprint() >> 20, henge_available_memory() >> 20))
+            }
+            userCode = userCode || nowEL0
+            let now = Date(), dt = max(now.timeIntervalSince(lastTime), 0.001)
+            let blocks = henge_vm_blocks()
+            let curGPU = henge_vm_gpu_frames()
+            blocksPerSecond = Double(blocks &- lastBlocks) / dt
+            gpuFPS = Double(curGPU &- lastGPUFrames) / dt
+            gpuFrames = curGPU
             lastBlocks = blocks
+            lastGPUFrames = curGPU
             lastTime = now
             framesOut = henge_vm_net_frames(1)
             framesIn = henge_vm_net_frames(0)
@@ -451,7 +520,7 @@ struct SessionView: View {
             if state == 2 { break }
             tick += 1
             if tick % 30 == 0 { HengeLog.logFootprint("session") } // how close to the limit, for a memory kill leaves no crash report
-            if tick % 60 == 0 { MacPreview.save(for: mac) }
+            if tick % 60 == 0 { MacPreview.save(for: targetMac) }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }

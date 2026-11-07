@@ -14,8 +14,8 @@ struct MacSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                DeskHeading("Name")
-                TextField("Name", text: $mac.name)
+                DeskHeading("Mac Adı")
+                TextField("Ad", text: $mac.name)
                     .font(.system(size: 16))
                     .submitLabel(.done)
                     .padding(.horizontal, 17)
@@ -23,26 +23,31 @@ struct MacSettingsView: View {
                     .deskCard()
                     .onSubmit(save)
 
-                DeskHeading("Memory")
+                DeskHeading("Bellek (RAM)")
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .firstTextBaseline) {
                         Text("\(mac.ramMB / 1024) GB").font(.system(size: 26, weight: .bold))
                         Spacer()
-                        Text(Entitlements.increasedMemory ? "Outside the app's limit once JIT is on" : "Used from free storage if needed")
-                            .font(.system(size: 13)).foregroundStyle(Desk.dim).multilineTextAlignment(.trailing)
+                        Text("Fiziksel: \(Device.physicalMemoryMB) MB · Sınır: \(Device.processMemoryLimitMB) MB")
+                            .font(.system(size: 12)).foregroundStyle(Desk.dim).multilineTextAlignment(.trailing)
                     }
-                    Picker("Memory", selection: Binding(get: { mac.ramMB / 1024 }, set: { mac.ramMB = $0 * 1024; save() })) {
-                        ForEach([4, 6, 8], id: \.self) { Text("\($0) GB").tag($0) }
+                    Picker("Bellek", selection: Binding(get: { mac.ramMB / 1024 }, set: { mac.ramMB = $0 * 1024; save() })) {
+                        ForEach(Device.ramOptionsGB, id: \.self) { Text("\($0) GB").tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    let adv = Device.ramAdvisory(forGB: mac.ramMB / 1024)
+                    Text(adv.message)
+                        .font(.system(size: 12))
+                        .foregroundStyle(adv.level == .recommended ? Desk.good : adv.level == .caution ? .orange : Desk.bad)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(17)
                 .deskCard()
 
-                DeskHeading("Processors")
+                DeskHeading("İşlemci Çekirdeği")
                 Stepper(value: $cpus, in: 1...6) {
                     HStack {
-                        Text("CPUs").font(.system(size: 16))
+                        Text("Sanal CPU").font(.system(size: 16))
                         Spacer()
                         Text("\(cpus)").font(.system(size: 16, weight: .semibold))
                     }
@@ -52,36 +57,36 @@ struct MacSettingsView: View {
                 .deskCard()
 
                 if Device.fittingScreen.height != 1080 {
-                    DeskHeading("Screen")
+                    DeskHeading("Ekran Oranı")
                     VStack(alignment: .leading, spacing: 12) {
-                        Picker("Screen", selection: Binding(get: { mac.screen.height == 1080 }, set: { wide in
+                        Picker("Ekran", selection: Binding(get: { mac.screen.height == 1080 }, set: { wide in
                             (mac.screenWidth, mac.screenHeight) = wide ? (1920, 1080) : Device.fittingScreen
                             save()
                         })) {
-                            Text("Fit this \(Device.name)").tag(false)
-                            Text("16:9").tag(true)
+                            Text("\(Device.name) Ekranına Tam Sığdır").tag(false)
+                            Text("16:9 Geniş").tag(true)
                         }
                         .pickerStyle(.segmented)
-                        Text("\(mac.screen.width) × \(mac.screen.height). Changes apply the next time this Mac starts.")
+                        Text("\(mac.screen.width) × \(mac.screen.height). Değişiklik bu Mac bir sonraki başlatıldığında uygulanır.")
                             .font(.system(size: 13)).foregroundStyle(Desk.dim)
                     }
                     .padding(17)
                     .deskCard()
                 }
 
-                DeskHeading("Storage")
+                DeskHeading("Depolama")
                 VStack(spacing: 11) {
                     HStack {
-                        Text("\(ByteText.string(UInt64(max(mac.bytesUsed, 0)))) used").font(.system(size: 16))
+                        Text("\(ByteText.string(UInt64(max(mac.bytesUsed, 0)))) kullanılan").font(.system(size: 16))
                         Spacer()
-                        Text("of \(ByteText.string(UInt64(max(mac.diskBytes, 0))))").font(.system(size: 16)).foregroundStyle(Desk.dim)
+                        Text("/ toplam \(ByteText.string(UInt64(max(mac.diskBytes, 0))))").font(.system(size: 16)).foregroundStyle(Desk.dim)
                     }
                     DeskBar(fraction: Double(mac.bytesUsed) / Double(max(mac.diskBytes, 1)))
                 }
                 .padding(17)
                 .deskCard()
 
-                DeskHeading("Manage")
+                DeskHeading("Yedekleme ve Yönetim")
                 manage
             }
             .padding(.horizontal, 16)
@@ -98,13 +103,13 @@ struct MacSettingsView: View {
             case .failure(let error): machines.lastError = error.localizedDescription
             }
         }
-        .confirmationDialog("Delete \(mac.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
+        .confirmationDialog("'\(mac.name)' silinsin mi?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Sanal Mac'i Sil", role: .destructive) {
                 machines.delete(mac.id)
                 dismiss()
             }
         } message: {
-            Text("Its disk is removed from this \(Device.name).")
+            Text("Bu sanal Mac'in diski bu \(Device.name)'dan kalıcı olarak silinir.")
         }
     }
 
@@ -112,26 +117,26 @@ struct MacSettingsView: View {
         VStack(spacing: 0) {
             if let name = machines.exporting {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Exporting \(name)… keep Henge open").font(.system(size: 15))
+                    Text("\(name) dışa aktarılıyor… Henge'i açık tutun").font(.system(size: 15))
                     DeskBar(fraction: machines.exported)
                 }
                 .padding(17)
             } else {
-                row("Export", symbol: "square.and.arrow.up", tint: Desk.accentLight) { machines.export(mac) }
+                row("Sanal Mac'i Dışa Aktar / Yedekle", symbol: "square.and.arrow.up", tint: Desk.accentLight) { machines.export(mac) }
             }
             if let folder = machines.lastExport {
                 divider
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Saved in Files, under Henge, Exports, \(folder.lastPathComponent). Deleting Henge deletes it too, so move it somewhere else first.")
+                    Text("Dosyalar (Files) › Henge › Exports › \(folder.lastPathComponent) altına kaydedildi. Uygulamayı silmeden veya yeniden yüklemeden önce başka bir klasöre taşıyın.")
                         .font(.system(size: 13)).foregroundStyle(Desk.dim)
-                    Button("Move Out of Henge…") { movingExport = true }
+                    Button("Yedeği Başka Klasöre Taşı…") { movingExport = true }
                         .font(.system(size: 15, weight: .semibold)).foregroundStyle(Desk.accentLight)
                 }
                 .padding(17)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             divider
-            row("Delete this Mac", symbol: nil, tint: Desk.bad) { confirmDelete = true }
+            row("Bu Sanal Mac'i Sil", symbol: nil, tint: Desk.bad) { confirmDelete = true }
         }
         .deskCard()
     }

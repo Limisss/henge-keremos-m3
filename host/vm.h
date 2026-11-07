@@ -27,6 +27,8 @@ typedef struct HvVmConfig {
 
 /* Returns 0, or -1 with a reason in err. */
 int hv_vm_create(const HvVmConfig *cfg, char *err, size_t errlen);
+/* Tears down a created VM before hv_vm_start has been called. */
+void hv_vm_destroy_unstarted(void);
 HvMachine *hv_vm_machine(void);
 HvVmapple *hv_vm_board(void);
 HvCpu *hv_vm_cpu(int index);

@@ -82,5 +82,7 @@ int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpus, uint64_t ram_size
 int hv_vmapple_load_rom(HvVmapple *b, const char *path);
 /* CPU reset: EL1, MMU off, interrupts masked, at the start of the ROM. */
 void hv_vmapple_reset_cpu(HvVmapple *b);
+/* Unmaps guest RAM and firmware ROM mappings held by the board. */
+void hv_vmapple_free(HvVmapple *b);
 
 #endif
