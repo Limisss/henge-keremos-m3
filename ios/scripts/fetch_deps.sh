@@ -38,8 +38,8 @@ trap 'rm -rf "$WORK"' EXIT
 # 1. Obtain StikJIT.framework from official Henge v0.1 release IPA (or local HENGE_BASE_IPA)
 IPA_SRC="${HENGE_BASE_IPA:-$WORK/Henge-v0.1.ipa}"
 if [ ! -f "$IPA_SRC" ]; then
-    echo "==> Downloading official Henge v0.1 release IPA to extract StikJIT.framework..."
-    curl -L --fail -o "$IPA_SRC" "https://github.com/Leviidev/Henge/releases/download/v0.1/Henge.ipa"
+    echo "==> Downloading official Henge 0.1 release IPA to extract StikJIT.framework..."
+    curl -L --fail -o "$IPA_SRC" "https://github.com/Leviidev/Henge/releases/download/0.1/Henge.ipa"
 fi
 unzip -q "$IPA_SRC" -d "$WORK/ipa"
 
