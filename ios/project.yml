@@ -29,11 +29,9 @@ targets:
           - "Henge.entitlements"
           - "AppIcon.icon/**"
           - "AppIcon.icon"
+          - "Assets.xcassets/**"
+          - "Assets.xcassets"
       - path: Henge/Resources
-        buildPhase: resources
-      # Icon Composer's document: the app icon, which iOS renders in Liquid Glass.
-      - path: Henge/AppIcon.icon
-        type: file
         buildPhase: resources
       # The messages the app and its JIT helper exchange.
       - path: HengeJITHelper/HengeJITMessages.swift
@@ -41,7 +39,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(HENGE_BUNDLE_IDENTIFIER)
         PRODUCT_NAME: Henge
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: Henge/Info.plist
         CODE_SIGN_ENTITLEMENTS: Henge/Henge.entitlements

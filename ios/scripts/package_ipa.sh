@@ -24,9 +24,11 @@ xcodebuild -project Henge.xcodeproj -scheme Henge -configuration Release -sdk ip
 }
 grep -E "BUILD" "$DD.buildlog" || true
 APP="$DD/Build/Products/Release-iphoneos/Henge.app"
-if [ ! -f "$APP/Assets.car" ] && [ -f "$IOS/deps/prebuilt/Assets.car" ]; then
-    cp "$IOS/deps/prebuilt/Assets.car" "$APP/Assets.car"
-fi
+for iconf in Assets.car "AppIcon60x60@2x.png" "AppIcon76x76@2x~ipad.png"; do
+    if [ ! -f "$APP/$iconf" ] && [ -f "$IOS/deps/prebuilt/$iconf" ]; then
+        cp "$IOS/deps/prebuilt/$iconf" "$APP/$iconf"
+    fi
+done
 if [ -f "$IOS/deps/prebuilt/HengeJITHelper.appex/HengeJITHelper" ]; then
     mkdir -p "$APP/PlugIns/HengeJITHelper.appex"
     cp "$IOS/deps/prebuilt/HengeJITHelper.appex/HengeJITHelper" "$APP/PlugIns/HengeJITHelper.appex/HengeJITHelper"

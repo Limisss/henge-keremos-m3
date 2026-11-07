@@ -47,9 +47,11 @@ FW_DIR="$DEPS/StikJIT.xcframework/ios-arm64/StikJIT.framework"
 rm -rf "$DEPS/StikJIT.xcframework" "$DEPS/prebuilt"
 mkdir -p "$FW_DIR/Modules/StikJIT.swiftmodule" "$DEPS/prebuilt"
 cp -R "$WORK/ipa/Payload/Henge.app/Frameworks/StikJIT.framework/"* "$FW_DIR/"
-if [ -f "$WORK/ipa/Payload/Henge.app/Assets.car" ]; then
-    cp "$WORK/ipa/Payload/Henge.app/Assets.car" "$DEPS/prebuilt/Assets.car"
-fi
+for iconf in Assets.car "AppIcon60x60@2x.png" "AppIcon76x76@2x~ipad.png"; do
+    if [ -f "$WORK/ipa/Payload/Henge.app/$iconf" ]; then
+        cp "$WORK/ipa/Payload/Henge.app/$iconf" "$DEPS/prebuilt/$iconf"
+    fi
+done
 if [ -d "$WORK/ipa/Payload/Henge.app/PlugIns/HengeJITHelper.appex" ]; then
     cp -R "$WORK/ipa/Payload/Henge.app/PlugIns/HengeJITHelper.appex" "$DEPS/prebuilt/HengeJITHelper.appex"
 fi
