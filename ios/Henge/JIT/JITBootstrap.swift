@@ -58,8 +58,11 @@ enum JITBootstrap {
     // region, with the stubs the loader places beside it. A larger prewarm is safe for QEMU, which is handed the
     // prewarmed region whenever it is at least what tb-size asks for.
     /// The one region HengeVM's translator gets for the whole session (it flushes and starts over when full,
-    /// never asks for more). 1 GB takes about 1.5 s to prepare, and a first boot through Setup makes that much code; a full flush drops all of it.
-    static let jitBytes = 1024 * 1024 * 1024
+    /// never asks for more). Without `extended-virtual-addressing`, XNU's low VA window (`0x100000000–0x180000000`)
+    /// holds our 1024 MiB `g_jit_reserve` slot: using 512 MiB for JIT allows both the 512 MiB RX and 512 MiB RW
+    /// mappings to sit inside `g_jit_reserve`, leaving the entire 6144 MiB high VA window (`0x7000000000–0x7180000000`)
+    /// untouched for 4–6 GB Guest RAM while also saving 512 MiB of physical RAM.
+    static let jitBytes = Entitlements.extendedAddressing ? 1024 * 1024 * 1024 : 512 * 1024 * 1024
 
     /// True once the region is held. The memory budget needs this: after a
     /// prewarm the JIT is already counted in the footprint, so subtracting it

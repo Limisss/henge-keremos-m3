@@ -498,6 +498,8 @@ struct SessionView: View {
             error = String(cString: buffer)
             return
         }
+        let actualMB = Int(henge_vm_active_ram_mb())
+        if actualMB > 0 { activeRAMMB = actualMB }
         started = Date()
         bootDurationSeconds = nil
         var used = targetMac
@@ -514,8 +516,8 @@ struct SessionView: View {
             if nowEL0 && !userCode {
                 let dur = Date().timeIntervalSince(started)
                 bootDurationSeconds = dur
-                HengeLog.log("bench", String(format: "macOS user-space (EL0) reached in %.1f s (RAM %llu MB, CPUs %d, phys_footprint %zu MB, avail %zu MB)",
-                                             dur, ram, cpus, henge_phys_footprint() >> 20, henge_available_memory() >> 20))
+                HengeLog.log("bench", String(format: "macOS user-space (EL0) reached in %.1f s (RAM %d MB, CPUs %d, phys_footprint %zu MB, avail %zu MB)",
+                                             dur, activeRAMMB, cpus, henge_phys_footprint() >> 20, henge_available_memory() >> 20))
             }
             userCode = userCode || nowEL0
             let now = Date(), dt = max(now.timeIntervalSince(lastTime), 0.001)

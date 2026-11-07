@@ -27,19 +27,16 @@ enum Device {
     /// Largest single contiguous virtual address mapping possible right now, in MB.
     static var largestContiguousMappingMB: Int { Int(henge_largest_mapping_mb()) }
 
-    /// Supported RAM options in GB, including 3 GB for 8 GB devices signed without extended entitlements.
-    static let ramOptionsGB: [Int] = [3, 4, 6, 8]
+    /// Supported RAM options in GB: 3, 4, 5, 6, and 8 GB.
+    static let ramOptionsGB: [Int] = [3, 4, 5, 6, 8]
 
-    /// Safe default RAM suggestion (in GB) taking both physical RAM and active signing entitlements into account.
-    /// On an 8 GB iPad (e.g. M3 Air) signed via personal Apple ID (Sideloadly: ~5117 MB jetsam limit, no
-    /// increased-memory-limit or extended-virtual-addressing), 1 GB RX JIT + 1 GB RW JIT alias + ~1 GB
-    /// HvMachine tables leave < 4 GB contiguous VA/budget, so 3 GB is the highest verified stable default.
+    /// Safe default RAM suggestion (in GB) taking physical RAM and virtual address layout into account.
+    /// Because both RX+RW JIT mappings (512 MB + 512 MB) and compacted HvMachine tables (~190 MB) now fit inside
+    /// the low VA window (`0x100000000–0x180000000`) and Guest RAM is pre-allocated first with `LEDGER_NO_FOOTPRINT`
+    /// in the 6144 MB high VA window (`0x7000000000–0x7180000000`), 4 GB is the optimal default on 8 GB devices,
+    /// while 5 GB and 6 GB are also selectable without extended entitlements.
     static var suggestedRAMGB: Int {
-        let limitMB = processMemoryLimitMB
-        if !Entitlements.increasedMemory || !Entitlements.extendedAddressing || limitMB < 5800 {
-            return 3
-        }
-        return physicalMemoryMB >= 7_000 && limitMB >= 6500 ? 4 : 3
+        return physicalMemoryMB >= 7_000 ? 4 : 3
     }
 
     enum RAMRiskLevel {
@@ -49,32 +46,37 @@ enum Device {
     }
 
     /// Evaluates a guest RAM selection (in GB) against the four distinct memory dimensions:
-    /// 1) Physical RAM, 2) Process jetsam limit, 3) Contiguous virtual address space, 4) Guest RAM + JIT/table overhead.
+    /// 1) Physical RAM, 2) Process jetsam limit (`LEDGER_NO_FOOTPRINT` exemption), 3) Contiguous VA space (`6144 MB` high window), 4) Host iPadOS headroom.
     static func ramAdvisory(forGB gb: Int) -> (level: RAMRiskLevel, message: String) {
         let limitMB = processMemoryLimitMB
         let physMB = physicalMemoryMB
-        if gb == 3 {
+        switch gb {
+        case 3:
             return (
                 .recommended,
-                "Önerilen güvenli seçim (3 GB = 3072 MB). Fiziksel RAM: \(physMB) MB, uygulama bellek sınırı: \(limitMB) MB. 1 GB JIT bölgesi ve emülatör tabloları ayrıldıktan sonra iPadOS ve macOS için kararlı çalışma payı bırakır."
+                "Güvenli seçim (3 GB = 3072 MB). Fiziksel RAM: \(physMB) MB. iPadOS arka plan uygulamaları için en geniş fiziksel bellek payını bırakır."
             )
-        }
-        if gb == 4 {
-            if !Entitlements.increasedMemory || !Entitlements.extendedAddressing || limitMB < 5800 {
-                return (
-                    .caution,
-                    "Uyarı (4 GB = 4096 MB): Mevcut imzada 'increased-memory-limit' / 'extended-virtual-addressing' izinleri kapalı (Uygulama sınırı: \(limitMB) MB). 1 GB JIT (RX+RW) ve ~1 GB emülatör tabloları sonrasında 4 GB kesintisiz bellek ayırma başarısız olabilir; hata alırsanız 3 GB kullanın."
-                )
-            }
+        case 4:
             return (
                 .recommended,
-                "4 GB (4096 MB): Yüksek bellek izni açık (\(limitMB) MB sınır). Günlük kullanım için uygun; uzun süreli yük altında bellek baskısı oluşursa 3 GB'a düşürün."
+                "Önerilen dengeli seçim (4 GB = 4096 MB). JIT (512 MB RX+RW) ve emülatör tabloları alt adres penceresine taşındığı ve Guest RAM 'LEDGER_NO_FOOTPRINT' ile üst 6144 MB penceresinden ayrıldığı için Sideloadly imzasında (\(limitMB) MB sınır) doğrudan çalışır."
+            )
+        case 5:
+            return (
+                .recommended,
+                "Yüksek kapasite (5 GB = 5120 MB). Üst sanal adres penceresine (6144 MB) tam sığar ve 'LEDGER_NO_FOOTPRINT' sayesinde uygulama sınırına (\(limitMB) MB) takılmaz. 8 GB cihazda (\(physMB) MB) iPadOS ve JIT için ~2.5 GB fiziksel pay kalır; arka plandaki ağır iPad uygulamalarını kapatmanız önerilir."
+            )
+        case 6:
+            return (
+                .caution,
+                "Maksimum sanal pencere sınırı (6 GB = 6144 MB). Üst adres penceresinin tamamını kullanır (gerekirse 128 MB adımlarla otomatik kırpılır). 8 GB iPad'de (\(physMB) MB) tüm sayfalar dolduğunda fiziksel RAM baskısı oluşabileceği için macOS içinde ağır yük altında dikkatli kullanın."
+            )
+        default:
+            return (
+                .unsupported,
+                "Desteklenmiyor / Deneysel (\(gb) GB = \(gb * 1024) MB): 'extended-virtual-addressing' izni olmadan 6144 MB üst sanal adres penceresini aşar ve 8 GB fiziksel RAM (\(physMB) MB) sınırını geçer."
             )
         }
-        return (
-            .unsupported,
-            "Deneysel / Doğrulanmadı (\(gb) GB = \(gb * 1024) MB): Fiziksel RAM (\(physMB) MB) ve uygulama sınırı (\(limitMB) MB) dikkate alındığında \(gb) GB bu cihazda veya 12 GB modellerde henüz doğrulanmamıştır; başlatma hatası veya ani kapanma (jetsam) beklenir."
-        )
     }
 
     /// The virtual CPU offers Armv8.5 instructions (core/sysreg.c), and macOS uses them. They run as

@@ -257,47 +257,76 @@ static uint64_t tick(HvMachine *m, HvCpu *cpu) {
     return deadline;
 }
 
+int hv_vmapple_prealloc_ram(HvVmapple *b, uint64_t ram_size) {
+    memset(b, 0, sizeof *b);
+    b->ram = MAP_FAILED;
+    b->rom = MAP_FAILED;
+    const char *ram_file = getenv("HV_RAM_FILE");
+    uint64_t min_try = ram_size > (3072ull << 20) ? (3072ull << 20) : ram_size;
+    uint64_t actual = ram_size;
+    if (!getenv("HV_RAM_NO_LEDGER")) {
+        for (uint64_t try_size = ram_size; try_size >= min_try; try_size -= (128ull << 20)) {
+            uint8_t *free_of_footprint = alloc_no_footprint(try_size);
+            if (free_of_footprint) {
+                b->ram = free_of_footprint;
+                actual = try_size;
+                break;
+            }
+            if (try_size < (128ull << 20)) break;
+        }
+    }
+    if (b->ram == MAP_FAILED && ram_file && *ram_file) {
+        for (uint64_t try_size = ram_size; try_size >= min_try; try_size -= (128ull << 20)) {
+            int fd = open(ram_file, O_RDWR | O_CREAT | O_TRUNC, 0600);
+            if (fd >= 0) {
+                unlink(ram_file);
+                if (ftruncate(fd, (off_t)try_size) == 0)
+                    b->ram = mmap(NULL, try_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                close(fd);
+            }
+            if (b->ram != MAP_FAILED) {
+                fprintf(stderr, "hengevm: guest RAM (%llu MB) is backed by a file\n", (unsigned long long)(try_size >> 20));
+                b->backed_by_file = 1;
+                actual = try_size;
+                break;
+            }
+            if (try_size < (128ull << 20)) break;
+        }
+        if (b->ram == MAP_FAILED)
+            fprintf(stderr, "hengevm: guest RAM file %s (%llu MB) failed: %s; using anonymous memory\n",
+                    ram_file, (unsigned long long)(ram_size >> 20), strerror(errno));
+    }
+    if (b->ram == MAP_FAILED) {
+        for (uint64_t try_size = ram_size; try_size >= min_try; try_size -= (128ull << 20)) {
+            b->ram = mmap(NULL, try_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+            if (b->ram != MAP_FAILED) {
+                actual = try_size;
+                break;
+            }
+            if (try_size < (128ull << 20)) break;
+        }
+        if (b->ram == MAP_FAILED) {
+            fprintf(stderr, "hengevm: anonymous guest RAM mmap (%llu MB) failed: %s\n",
+                    (unsigned long long)(ram_size >> 20), strerror(errno));
+            return -1;
+        }
+    }
+    b->ram_size = actual;
+    return 0;
+}
+
 int hv_vmapple_create(HvVmapple *b, HvMachine *m, HvCpu *cpu, uint64_t ram_size, HvDisk *root, HvDisk *aux,
                       const HvCfgParams *cfg, const uint8_t mac[6]) {
-    memset(b, 0, sizeof *b);
+    int preallocated = (b->ram != NULL && b->ram != MAP_FAILED && b->ram_size > 0);
+    if (!preallocated) {
+        if (hv_vmapple_prealloc_ram(b, ram_size) != 0) return -1;
+    }
+    ram_size = b->ram_size;
     b->m = m;
     b->cpu = cpu;
     b->ncpus = cfg->nr_cpus ? (int)cfg->nr_cpus : 1;
     if (b->ncpus > HV_MAX_CPUS) b->ncpus = HV_MAX_CPUS;
-    b->ram_size = ram_size;
-    /* HV_RAM_FILE: guest RAM in a file. iOS's memory limit counts anonymous
-       pages and not pages of a mapped file, which it can also write out and
-       drop by itself, so the guest can have more RAM than the app may hold.
-       The file is unlinked at once and goes away with the process. */
-    const char *ram_file = getenv("HV_RAM_FILE");
-    int backed_by_file = 0;
-    b->ram = MAP_FAILED;
-    b->rom = MAP_FAILED;
-    if (!getenv("HV_RAM_NO_LEDGER")) {
-        uint8_t *free_of_footprint = alloc_no_footprint(ram_size);
-        if (free_of_footprint) b->ram = free_of_footprint;
-    }
-    if (b->ram == MAP_FAILED && ram_file && *ram_file) {
-        int fd = open(ram_file, O_RDWR | O_CREAT | O_TRUNC, 0600);
-        if (fd >= 0) {
-            unlink(ram_file);
-            if (ftruncate(fd, (off_t)ram_size) == 0)
-                b->ram = mmap(NULL, ram_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            close(fd);
-        }
-        if (b->ram == MAP_FAILED) fprintf(stderr, "hengevm: guest RAM file %s (%llu MB) failed: %s; using anonymous memory\n", ram_file, (unsigned long long)(ram_size >> 20), strerror(errno));
-        else {
-            fprintf(stderr, "hengevm: guest RAM (%llu MB) is backed by a file\n", (unsigned long long)(ram_size >> 20));
-            backed_by_file = 1;
-        }
-    }
-    if (b->ram == MAP_FAILED) {
-        b->ram = mmap(NULL, ram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (b->ram == MAP_FAILED) {
-            fprintf(stderr, "hengevm: anonymous guest RAM mmap (%llu MB) failed: %s\n", (unsigned long long)(ram_size >> 20), strerror(errno));
-            return -1;
-        }
-    }
+    int backed_by_file = b->backed_by_file;
     b->rom = mmap(NULL, ROM_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (b->rom == MAP_FAILED) {
         fprintf(stderr, "hengevm: firmware ROM mmap failed: %s\n", strerror(errno));

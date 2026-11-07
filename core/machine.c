@@ -54,9 +54,15 @@ int hv_machine_init_jit(HvMachine *m, void *rx, void *rw, size_t jit_bytes) {
 static int init_rest(HvMachine *m) {
     /* As many blocks as the region holds (a block is at least ~160 bytes of
        code), so the region filling, not this table, is what flushes; two
-       chainable exits each at most. Untouched entries cost nothing. */
+       chainable exits each at most. On iOS without extended-virtual-addressing,
+       cap max_blocks at 256K so the block/slot tables (~42 MiB) stay inside the
+       low VA window instead of fragmenting the 6 GiB upper guest RAM window. */
     size_t bytes = m->jit.capacity * sizeof(uint32_t);
-    m->max_blocks = (uint32_t)(bytes / 160 < 4096 ? 4096 : bytes / 160);
+    uint32_t calc_blocks = (uint32_t)(bytes / 160 < 4096 ? 4096 : bytes / 160);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (calc_blocks > 262144u) calc_blocks = 262144u;
+#endif
+    m->max_blocks = calc_blocks;
     m->max_slots = m->max_blocks * 2;
     m->blocks = calloc(m->max_blocks, sizeof(HvBlock));
     if (!m->blocks) return -1;

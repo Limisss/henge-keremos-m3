@@ -243,9 +243,27 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
         sigaction(SIGSEGV, &prior_segv, NULL);
         return fail(err, errlen, "Yardımcı depolama (aux.img) açılamadı.");
     }
+    uint64_t ram_mb = c->ram_mb ? c->ram_mb : 2048;
+    /* Pre-allocate guest RAM BEFORE hv_machine_init_jit so the contiguous 6 GiB upper
+       VA window (0x7000000000-0x7180000000) is claimed before small emulator tables. */
+    if (hv_vmapple_prealloc_ram(&board, ram_mb << 20) != 0) {
+        hv_vmapple_free(&board);
+        hv_disk_close(&aux);
+        hv_disk_close(&disk);
+        sigaction(SIGILL, &prior_ill, NULL);
+        sigaction(SIGBUS, &prior_bus, NULL);
+        sigaction(SIGSEGV, &prior_segv, NULL);
+        char msg[256];
+        snprintf(msg, sizeof msg,
+                 "Sanal makine için %llu MB (%llu GB) RAM ayrılamadı. Uygulama bellek sınırı veya kesintisiz sanal adres alanı yetersiz (3 GB ile tekrar deneyin).",
+                 (unsigned long long)ram_mb, (unsigned long long)(ram_mb / 1024));
+        return fail(err, errlen, msg);
+    }
+    ram_mb = board.ram_size >> 20;
     size_t jit = c->jit_bytes ? c->jit_bytes : (size_t)768 << 20;
     int r = c->jit_rx ? hv_machine_init_jit(&m, c->jit_rx, c->jit_rw, jit) : hv_machine_init(&m, jit);
     if (r != 0) {
+        hv_vmapple_free(&board);
         hv_disk_close(&aux);
         hv_disk_close(&disk);
         sigaction(SIGILL, &prior_ill, NULL);
@@ -266,8 +284,7 @@ int hv_vm_create(const HvVmConfig *c, char *err, size_t errlen) {
         cfg.run_installer1 = a, cfg.run_installer2 = b2;
     }
     static const uint8_t mac[6] = {0x02, 0x48, 0x56, 0x4d, 0x00, 0x01};
-    uint64_t ram_mb = c->ram_mb ? c->ram_mb : 2048;
-    if (hv_vmapple_create(&board, &m, cpus, ram_mb << 20, &disk, &aux, &cfg, mac) != 0) {
+    if (hv_vmapple_create(&board, &m, cpus, board.ram_size, &disk, &aux, &cfg, mac) != 0) {
         hv_vmapple_free(&board);
         hv_machine_free(&m);
         hv_disk_close(&aux);

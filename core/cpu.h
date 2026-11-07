@@ -202,8 +202,16 @@ typedef struct HvCpu {
 
 /* Indirect-branch cache: one table per block-flags value, 64K entries of 16 bytes,
    indexed by ((va ^ va >> 16) >> 2) so code at the same offset in different pages spreads out. */
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#define HV_IJC_BITS 16
+#define HV_UCODE_BITS 16
+#else
 #define HV_IJC_BITS 18
 #define HV_UCODE_BITS 18
+#endif
 #define HV_IJC_TABLE_BYTES ((1u << HV_IJC_BITS) * 16)
 #define HV_CPU_TLB_EL      32 /* between a slot's tables */
 

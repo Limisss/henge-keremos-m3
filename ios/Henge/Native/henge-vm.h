@@ -66,6 +66,8 @@ int henge_vm_boot_display(const uint8_t **pixels, int *width, int *height, int *
 /* The largest single mapping the address space takes right now, in MB (the
    increased virtual addressing entitlement raises it). */
 uint64_t henge_largest_mapping_mb(void);
+/* Actual guest RAM allocated for the active VM, in MB. */
+uint64_t henge_vm_active_ram_mb(void);
 /* Bytes this process may still allocate before jetsam (os_proc_available_memory). */
 size_t henge_available_memory(void);
 /* Current physical memory footprint charged to this process, in bytes (task_vm_info.phys_footprint). */

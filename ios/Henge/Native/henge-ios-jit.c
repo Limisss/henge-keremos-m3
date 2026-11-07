@@ -372,6 +372,7 @@ static const char *volatile g_self_route;
 const char *henge_ios_jit_self_route(void) { return g_self_route; }
 
 static void henge_ios_jit_release_low_hold(size_t bytes);
+static void henge_ios_jit_release_low_hold_tail(void);
 
 static HengeDualMapping henge_self_dual_mapping(size_t bytes)
 {
@@ -383,6 +384,7 @@ static HengeDualMapping henge_self_dual_mapping(size_t bytes)
     size_t size = (bytes + 0x3fff) & ~(size_t)0x3fff;
     /* No debugger will take the reserved block on this route, and it would keep this mapping out of the low window. */
     henge_ios_jit_release_low_hold(size);
+    henge_ios_jit_release_low_hold_tail();
 
     /* 1. MAP_JIT: requires dynamic-codesigning. Refused with EPERM elsewhere, harmlessly. */
     uint8_t *rx = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
@@ -471,18 +473,39 @@ static HengeDualMapping henge_self_dual_mapping(size_t bytes)
    land in between, which costs nothing until it is touched. It is handed back just before
    the debugger allocates, and the debugger's first-fit allocation takes the hole. */
 #define HENGE_JIT_LOW_LIMIT 0x7000000000ull
-#define HENGE_JIT_HOLD_BYTES ((size_t)1 << 30) /* JITBootstrap.jitBytes */
+#define HENGE_JIT_HOLD_BYTES ((size_t)1 << 30) /* 1 GiB reserved in __DATA: holds 512 MiB RX + 512 MiB RW */
 __attribute__((used, aligned(16384))) static uint8_t g_jit_reserve[HENGE_JIT_HOLD_BYTES + (16u << 10)];
 static bool g_jit_reserve_released;
+static bool g_jit_reserve_tail_held;
+static vm_address_t g_jit_reserve_tail_addr;
+static size_t g_jit_reserve_tail_bytes;
 
-/* Give the reserved block back for the debugger's allocation, if it is the size asked for. */
+/* Give the reserved block back for the debugger's allocation. When bytes * 2 <= HENGE_JIT_HOLD_BYTES
+   (e.g. 512 MiB RX + 512 MiB RW inside the 1 GiB reserve), release only the first half before
+   BreakGetJITMapping so the second half remains protected for the RW vm_remap immediately after. */
 static void henge_ios_jit_release_low_hold(size_t bytes)
 {
     if (g_jit_reserve_released || bytes > HENGE_JIT_HOLD_BYTES) return;
     vm_address_t start = ((vm_address_t)g_jit_reserve + 16383) & ~(vm_address_t)16383;
-    kern_return_t kr = vm_deallocate(mach_task_self(), start, HENGE_JIT_HOLD_BYTES);
-    HENGE_LOG("released the reserved block at %#lx for the JIT region: %s", (unsigned long)start, mach_error_string(kr));
+    size_t release_now = (bytes * 2 <= HENGE_JIT_HOLD_BYTES) ? bytes : HENGE_JIT_HOLD_BYTES;
+    kern_return_t kr = vm_deallocate(mach_task_self(), start, release_now);
+    HENGE_LOG("released %zu MiB of the reserved block at %#lx for the JIT RX region: %s",
+              release_now >> 20, (unsigned long)start, mach_error_string(kr));
+    if (release_now < HENGE_JIT_HOLD_BYTES) {
+        g_jit_reserve_tail_held = true;
+        g_jit_reserve_tail_addr = start + release_now;
+        g_jit_reserve_tail_bytes = HENGE_JIT_HOLD_BYTES - release_now;
+    }
     g_jit_reserve_released = true;
+}
+
+static void henge_ios_jit_release_low_hold_tail(void)
+{
+    if (!g_jit_reserve_tail_held) return;
+    kern_return_t kr = vm_deallocate(mach_task_self(), g_jit_reserve_tail_addr, g_jit_reserve_tail_bytes);
+    HENGE_LOG("released remaining %zu MiB of the reserved block at %#lx for the JIT RW alias: %s",
+              g_jit_reserve_tail_bytes >> 20, (unsigned long)g_jit_reserve_tail_addr, mach_error_string(kr));
+    g_jit_reserve_tail_held = false;
 }
 
 /* The address space, for working out where a JIT region can go: every mapping, and the gaps of 256 MiB or more. */
@@ -675,6 +698,7 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
     }
 
     henge_ios_jit_log_map("after");
+    henge_ios_jit_release_low_hold_tail();
     if (rx != NULL && (uint64_t)(uintptr_t)rx + bytes > HENGE_JIT_LOW_LIMIT) {
         /* Calling into it would hang the app with the debugger still attached. */
         HENGE_LOG("#%llu: the JIT region came back at %p, above %#llx where generated code does not run; "

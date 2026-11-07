@@ -173,8 +173,12 @@ size_t henge_phys_footprint(void) {
     return 0;
 }
 
+uint64_t henge_vm_active_ram_mb(void) {
+    return state ? (hv_vm_board()->ram_size >> 20) : 0;
+}
+
 uint64_t henge_largest_mapping_mb(void) {
-    for (uint64_t mb = 16384; mb >= 1024; mb -= 512) {
+    for (uint64_t mb = 16384; mb >= 1024; mb -= 128) {
         void *p = mmap(NULL, mb << 20, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (p != MAP_FAILED) {
             munmap(p, mb << 20);
